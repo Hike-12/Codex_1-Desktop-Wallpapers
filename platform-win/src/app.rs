@@ -1,12 +1,12 @@
 use std::{
     ffi::OsStr,
-    fs,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use core_engine::{Renderer, Result};
+use tokio::sync::oneshot;
 use windows_sys::Win32::Foundation::RECT;
 use winit::{
     application::ApplicationHandler,
@@ -15,31 +15,59 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::desktop::{Desktop, primary_bounds};
+use crate::{
+    desktop::{Desktop, primary_bounds},
+    ipc,
+    shader::ShaderFile,
+};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const DESKTOP_INTERVAL: Duration = Duration::from_millis(250);
 const SHADER_INTERVAL: Duration = Duration::from_millis(500);
 
+const USAGE: &str =
+    "Usage: wallp [shader.wgsl | pack-folder]\n       wallp set <shader.wgsl | pack-folder>";
+
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let shader = args.next();
-    if shader.as_deref() == Some(OsStr::new("--help")) {
+    if matches!(
+        shader.as_deref().and_then(OsStr::to_str),
+        Some("--help" | "-h")
+    ) {
         println!(
-            "Usage: wallp [shader.wgsl]\nRun the wallpaper on the primary display. Press Ctrl+C to stop."
+            "{USAGE}\n\nRun on the primary display. Use 'wallp set' from another terminal to switch while running."
         );
         return Ok(());
     }
-    if args.next().is_some() {
-        return Err("Usage: wallp [shader.wgsl]".into());
+    if shader.as_deref() == Some(OsStr::new("set")) {
+        let path = args.next().ok_or(USAGE)?;
+        if args.next().is_some() {
+            return Err(USAGE.into());
+        }
+        ipc::set(PathBuf::from(path).as_path())?;
+        println!("Wallpaper updated.");
+        return Ok(());
     }
+    if args.next().is_some() {
+        return Err(USAGE.into());
+    }
+    let event_loop = EventLoop::<Event>::with_user_event().build()?;
+    ipc::listen(event_loop.create_proxy())?;
     let mut app = App {
         running: None,
         shader: shader.map(PathBuf::from),
         error: None,
     };
-    EventLoop::new()?.run_app(&mut app)?;
+    event_loop.run_app(&mut app)?;
     app.error.map_or(Ok(()), Err)
+}
+
+pub enum Event {
+    Set {
+        path: PathBuf,
+        reply: oneshot::Sender<std::result::Result<(), String>>,
+    },
 }
 
 struct App {
@@ -55,7 +83,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<Event> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running.is_some() {
             return;
@@ -65,6 +93,23 @@ impl ApplicationHandler for App {
             Ok(wallpaper) => self.running = Some(wallpaper),
             Err(error) => self.fail(event_loop, error),
         }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: Event) {
+        let Event::Set { path, reply } = event;
+        if reply.is_closed() {
+            return;
+        }
+        let result = self
+            .running
+            .as_mut()
+            .ok_or_else(|| "wallp is still starting".to_owned())
+            .and_then(|wallpaper| {
+                wallpaper
+                    .select_shader(path)
+                    .map_err(|error| error.to_string())
+            });
+        let _ = reply.send(result);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -116,7 +161,7 @@ struct Wallpaper {
     paused_at: Instant,
     paused_duration: Duration,
     presented: bool,
-    shader: Option<LocalShader>,
+    shader: Option<ShaderFile>,
 }
 
 impl Wallpaper {
@@ -139,6 +184,13 @@ impl Wallpaper {
         if paused {
             eprintln!("wallp: paused for fullscreen");
         }
+        let shader = shader.and_then(|path| match ShaderFile::resolve(path) {
+            Ok(shader) => Some(shader),
+            Err(error) => {
+                eprintln!("wallp: {error}");
+                None
+            }
+        });
         Ok(Self {
             renderer,
             window,
@@ -152,11 +204,15 @@ impl Wallpaper {
             paused_at: now,
             paused_duration: Duration::ZERO,
             presented: false,
-            shader: shader.map(|path| LocalShader {
-                path,
-                last_read: None,
-            }),
+            shader,
         })
+    }
+
+    fn select_shader(&mut self, path: PathBuf) -> Result<()> {
+        let shader = ShaderFile::resolve(path)?.select(&mut self.renderer)?;
+        self.shader = Some(shader);
+        self.next_shader_check = Instant::now() + SHADER_INTERVAL;
+        Ok(())
     }
 
     fn update(&mut self) -> Result<Instant> {
@@ -200,27 +256,5 @@ impl Wallpaper {
             self.window.request_redraw();
         }
         Ok(deadline.min(self.next_frame))
-    }
-}
-
-struct LocalShader {
-    path: PathBuf,
-    last_read: Option<std::result::Result<String, String>>,
-}
-
-impl LocalShader {
-    fn reload(&mut self, renderer: &mut Renderer<'_>) {
-        let read = fs::read_to_string(&self.path).map_err(|error| error.to_string());
-        if self.last_read.as_ref() == Some(&read) {
-            return;
-        }
-        match &read {
-            Ok(source) => match pollster::block_on(renderer.set_shader(source)) {
-                Ok(()) => eprintln!("wallp: loaded {}", self.path.display()),
-                Err(error) => eprintln!("wallp: {}: {error}", self.path.display()),
-            },
-            Err(error) => eprintln!("wallp: {}: {error}", self.path.display()),
-        }
-        self.last_read = Some(read);
     }
 }

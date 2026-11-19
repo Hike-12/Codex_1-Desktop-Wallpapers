@@ -2,6 +2,10 @@
 mod app;
 #[cfg(windows)]
 mod desktop;
+#[cfg(windows)]
+mod ipc;
+#[cfg(windows)]
+mod shader;
 
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
