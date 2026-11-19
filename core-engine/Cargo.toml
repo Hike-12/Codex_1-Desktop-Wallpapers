@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 pollster = "0.4"
+rustfft = "6"
 serde = { version = "1", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 wgpu = { version = "24", default-features = false, features = ["dx12", "metal", "wgsl", "vulkan-portability"] }

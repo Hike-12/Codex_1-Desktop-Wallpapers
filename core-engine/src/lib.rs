@@ -1,10 +1,21 @@
 use std::error::Error;
 
+pub mod audio;
 pub mod shader;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub const DEFAULT_SHADER: &str = include_str!("default.wgsl");
+
+const UNIFORM_BYTES: u64 = 96;
+
+#[derive(Default)]
+pub struct FrameInputs {
+    /// Monitor-local coordinates with the origin at the top left.
+    pub cursor: Option<[f32; 2]>,
+    /// Normalized playback levels, ordered from bass to treble.
+    pub audio_bands: [f32; audio::BAND_COUNT],
+}
 
 pub struct Renderer<'window> {
     surface: wgpu::Surface<'window>,
@@ -68,7 +79,7 @@ impl<'window> Renderer<'window> {
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Wallpaper uniforms"),
-            size: 16,
+            size: UNIFORM_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -80,7 +91,7 @@ impl<'window> Renderer<'window> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(16),
+                    min_binding_size: wgpu::BufferSize::new(UNIFORM_BYTES),
                 },
                 count: None,
             }],
@@ -113,12 +124,25 @@ impl<'window> Renderer<'window> {
     }
 
     pub async fn set_shader(&mut self, source: &str) -> Result<()> {
-        let pipeline = compile(&self.device, &self.layout, self.config.format, source).await?;
-        self.pipeline = pipeline;
+        self.pipeline = self.prepare_shader(source).await?;
         Ok(())
     }
 
+    async fn prepare_shader(&self, source: &str) -> Result<wgpu::RenderPipeline> {
+        compile(&self.device, &self.layout, self.config.format, source).await
+    }
+
     pub fn render(&mut self, width: u32, height: u32, time: f32) -> Result<bool> {
+        self.render_with_inputs(width, height, time, &FrameInputs::default())
+    }
+
+    pub fn render_with_inputs(
+        &mut self,
+        width: u32,
+        height: u32,
+        time: f32,
+        inputs: &FrameInputs,
+    ) -> Result<bool> {
         if width == 0 || height == 0 {
             return Ok(false);
         }
@@ -137,7 +161,15 @@ impl<'window> Renderer<'window> {
             Err(error) => return Err(error.into()),
         };
 
-        let uniforms = [width as f32, height as f32, time, 0.0].map(f32::to_le_bytes);
+        // Keep the original 16-byte prefix so existing shaders still load.
+        let mut values = [0.0; UNIFORM_BYTES as usize / 4];
+        values[..3].copy_from_slice(&[width as f32, height as f32, time]);
+        if let Some(cursor) = inputs.cursor {
+            values[4..6].copy_from_slice(&cursor);
+            values[6] = 1.0;
+        }
+        values[8..].copy_from_slice(&inputs.audio_bands);
+        let uniforms = values.map(f32::to_le_bytes);
         self.queue
             .write_buffer(&self.globals, 0, uniforms.as_flattened());
         let view = frame.texture.create_view(&Default::default());

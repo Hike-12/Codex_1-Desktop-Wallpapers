@@ -1,6 +1,7 @@
 use std::{
     fs, io,
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 use serde::Deserialize;
@@ -65,9 +66,11 @@ pub fn installed_packs(root: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     Ok(packs)
 }
 
+#[derive(Clone)]
 pub struct ShaderFile {
     path: PathBuf,
-    last_read: Option<std::result::Result<String, String>>,
+    last_read: Option<std::result::Result<Arc<str>, String>>,
+    last_good: Option<Arc<str>>,
 }
 
 impl ShaderFile {
@@ -86,33 +89,77 @@ impl ShaderFile {
         Ok(Self {
             path,
             last_read: None,
+            last_good: None,
         })
     }
 
-    pub fn select(mut self, renderer: &mut Renderer<'_>) -> Result<Self> {
-        let source = fs::read_to_string(&self.path)
+    pub fn select(self, renderer: &mut Renderer<'_>) -> Result<Self> {
+        self.select_all(&mut [renderer])
+    }
+
+    pub fn select_all(mut self, renderers: &mut [&mut Renderer<'_>]) -> Result<Self> {
+        let source: Arc<str> = fs::read_to_string(&self.path)
+            .map(Arc::from)
             .map_err(|error| format!("{}: {error}", self.path.display()))?;
-        pollster::block_on(renderer.set_shader(&source))
+        set_shader_all(&source, renderers)
             .map_err(|error| format!("{}: {error}", self.path.display()))?;
+        self.last_good = Some(source.clone());
         self.last_read = Some(Ok(source));
         eprintln!("wallp: loaded {}", self.path.display());
         Ok(self)
     }
 
+    pub fn apply_to(&self, renderer: &mut Renderer<'_>) -> Result<()> {
+        if let Some(source) = &self.last_good {
+            pollster::block_on(renderer.set_shader(source))?;
+        }
+        Ok(())
+    }
+
     pub fn reload(&mut self, renderer: &mut Renderer<'_>) {
-        let read = fs::read_to_string(&self.path).map_err(|error| error.to_string());
+        self.reload_all(&mut [renderer]);
+    }
+
+    pub fn reload_all(&mut self, renderers: &mut [&mut Renderer<'_>]) {
+        if renderers.is_empty() {
+            return;
+        }
+        let read = fs::read_to_string(&self.path)
+            .map(Arc::from)
+            .map_err(|error| error.to_string());
         if self.last_read.as_ref() == Some(&read) {
             return;
         }
         match &read {
-            Ok(source) => match pollster::block_on(renderer.set_shader(source)) {
-                Ok(()) => eprintln!("wallp: loaded {}", self.path.display()),
+            Ok(source) => match set_shader_all(source, renderers) {
+                Ok(()) => {
+                    self.last_good = Some(source.clone());
+                    eprintln!("wallp: loaded {}", self.path.display());
+                }
                 Err(error) => eprintln!("wallp: {}: {error}", self.path.display()),
             },
             Err(error) => eprintln!("wallp: {}: {error}", self.path.display()),
         }
         self.last_read = Some(read);
     }
+}
+
+/// Compile each display's pipeline before changing any of them.
+pub fn set_shader_all(source: &str, renderers: &mut [&mut Renderer<'_>]) -> Result<()> {
+    if renderers.is_empty() {
+        return Err("No wallpaper displays are available".into());
+    }
+    let pipelines = pollster::block_on(async {
+        let mut pipelines = Vec::with_capacity(renderers.len());
+        for renderer in renderers.iter() {
+            pipelines.push(renderer.prepare_shader(source).await?);
+        }
+        Ok::<_, Box<dyn std::error::Error>>(pipelines)
+    })?;
+    for (renderer, pipeline) in renderers.iter_mut().zip(pipelines) {
+        renderer.pipeline = pipeline;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
