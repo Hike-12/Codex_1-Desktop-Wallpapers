@@ -1,0 +1,15 @@
+[package]
+name = "platform-linux"
+version.workspace = true
+edition.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+core-engine.workspace = true
+pollster = "0.4"
+raw-window-handle = "0.6"
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
+wgpu = { version = "24", default-features = false, features = ["vulkan-portability", "wgsl"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11"] }
+x11rb = "0.13"

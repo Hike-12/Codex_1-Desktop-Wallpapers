@@ -1,0 +1,12 @@
+[package]
+name = "platform-mac"
+version.workspace = true
+edition.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-engine.workspace = true
+objc2-app-kit = { version = "0.2", default-features = false, features = ["NSResponder", "NSScreen", "NSView", "NSWindow"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGWindowLevel"] }
+objc2-foundation = { version = "0.2", default-features = false, features = ["NSArray", "NSThread"] }
+pollster = "0.4"
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
