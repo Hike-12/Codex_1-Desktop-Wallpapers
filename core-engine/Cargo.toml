@@ -1,0 +1,7 @@
+[package]
+name = "core-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wgpu = { version = "24", default-features = false, features = ["dx12", "metal", "wgsl", "vulkan-portability"] }
