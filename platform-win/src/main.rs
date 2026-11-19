@@ -6,6 +6,8 @@ mod desktop;
 mod ipc;
 #[cfg(windows)]
 mod shader;
+#[cfg(windows)]
+mod tray;
 
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {

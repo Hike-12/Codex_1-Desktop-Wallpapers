@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 
@@ -12,7 +12,7 @@ struct Manifest {
     shader: PathBuf,
 }
 
-fn read_pack(folder: &Path) -> Result<PathBuf> {
+fn read_pack(folder: &Path) -> Result<(String, PathBuf)> {
     let manifest: Manifest = toml::from_str(&fs::read_to_string(folder.join("manifest.toml"))?)?;
     let name = manifest.name.trim();
     if name.is_empty() || name.chars().any(char::is_control) {
@@ -25,7 +25,7 @@ fn read_pack(folder: &Path) -> Result<PathBuf> {
     if !shader.starts_with(&root) || !shader.is_file() {
         return Err("The WGSL shader must be a file inside its wallpaper pack".into());
     }
-    Ok(shader)
+    Ok((name.to_owned(), shader))
 }
 
 fn is_wgsl(path: &Path) -> bool {
@@ -44,6 +44,26 @@ fn validate_pack_shader(path: &Path) -> Result<()> {
     Err("Pack 'shader' must be a relative .wgsl path inside the pack".into())
 }
 
+pub fn installed_packs(root: &Path) -> io::Result<Vec<(String, PathBuf)>> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut packs = Vec::new();
+    for entry in entries {
+        let folder = entry?.path();
+        if folder.is_dir() {
+            match read_pack(&folder) {
+                Ok((name, _)) => packs.push((name, folder)),
+                Err(error) => eprintln!("wallp: {}: {error}", folder.display()),
+            }
+        }
+    }
+    packs.sort();
+    Ok(packs)
+}
+
 pub struct ShaderFile {
     path: PathBuf,
     last_read: Option<std::result::Result<String, String>>,
@@ -52,7 +72,9 @@ pub struct ShaderFile {
 impl ShaderFile {
     pub fn resolve(path: PathBuf) -> Result<Self> {
         let path = if path.is_dir() {
-            read_pack(&path).map_err(|error| format!("{}: {error}", path.display()))?
+            read_pack(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .1
         } else if is_wgsl(&path) {
             path
         } else {

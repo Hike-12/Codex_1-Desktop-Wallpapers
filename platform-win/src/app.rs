@@ -5,8 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_engine::{Renderer, Result};
+use core_engine::{DEFAULT_SHADER, Renderer, Result};
 use tokio::sync::oneshot;
+use tray_icon::menu::MenuEvent;
 use windows_sys::Win32::Foundation::RECT;
 use winit::{
     application::ApplicationHandler,
@@ -19,6 +20,7 @@ use crate::{
     desktop::{Desktop, primary_bounds},
     ipc,
     shader::ShaderFile,
+    tray::{self, Action, Tray},
 };
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -36,7 +38,9 @@ pub fn run() -> Result<()> {
         Some("--help" | "-h")
     ) {
         println!(
-            "{USAGE}\n\nRun on the primary display. Use 'wallp set' from another terminal to switch while running."
+            "{USAGE}\n\nRun on the primary display. Use the system tray or 'wallp set' to switch while running.\n\
+             Packs in %APPDATA%\\wallp\\wallpapers appear in the tray. Each needs a manifest.toml\n\
+             with a name and a relative shader path, for example shader = \"shader.wgsl\"."
         );
         return Ok(());
     }
@@ -54,10 +58,15 @@ pub fn run() -> Result<()> {
     }
     let event_loop = EventLoop::<Event>::with_user_event().build()?;
     ipc::listen(event_loop.create_proxy())?;
+    let proxy = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(Event::Menu(event));
+    }));
     let mut app = App {
         running: None,
         shader: shader.map(PathBuf::from),
         error: None,
+        tray: None,
     };
     event_loop.run_app(&mut app)?;
     app.error.map_or(Ok(()), Err)
@@ -68,18 +77,33 @@ pub enum Event {
         path: PathBuf,
         reply: oneshot::Sender<std::result::Result<(), String>>,
     },
+    Menu(MenuEvent),
 }
 
 struct App {
     running: Option<Wallpaper>,
     shader: Option<PathBuf>,
     error: Option<Box<dyn std::error::Error>>,
+    tray: Option<Tray>,
 }
 
 impl App {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: Box<dyn std::error::Error>) {
         self.error = Some(error);
         event_loop.exit();
+    }
+
+    fn menu_action(&mut self, event_loop: &ActiveEventLoop, event: MenuEvent) -> Result<()> {
+        let (Some(tray), Some(wallpaper)) = (&mut self.tray, &mut self.running) else {
+            return Ok(());
+        };
+        match tray.action(&event.id)? {
+            Some(Action::BuiltIn) => wallpaper.select_builtin()?,
+            Some(Action::Select(path)) => wallpaper.select_shader(path)?,
+            Some(Action::Quit) => event_loop.exit(),
+            None => {}
+        }
+        Ok(())
     }
 }
 
@@ -90,26 +114,42 @@ impl ApplicationHandler<Event> for App {
         }
         event_loop.listen_device_events(DeviceEvents::Never);
         match Wallpaper::new(event_loop, self.shader.take()) {
-            Ok(wallpaper) => self.running = Some(wallpaper),
+            Ok(wallpaper) => {
+                self.running = Some(wallpaper);
+                match Tray::new() {
+                    Ok(tray) => self.tray = Some(tray),
+                    Err(error) => eprintln!("wallp: could not create the tray icon: {error}"),
+                }
+            }
             Err(error) => self.fail(event_loop, error),
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: Event) {
-        let Event::Set { path, reply } = event;
-        if reply.is_closed() {
-            return;
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Event) {
+        match event {
+            Event::Set { path, reply } => {
+                if reply.is_closed() {
+                    return;
+                }
+                let result = self
+                    .running
+                    .as_mut()
+                    .ok_or_else(|| "wallp is still starting".to_owned())
+                    .and_then(|wallpaper| {
+                        wallpaper
+                            .select_shader(path)
+                            .map_err(|error| error.to_string())
+                    });
+                let _ = reply.send(result);
+            }
+            Event::Menu(event) => {
+                if let Err(error) = self.menu_action(event_loop, event) {
+                    let message = error.to_string();
+                    eprintln!("wallp: {message}");
+                    tray::show_error(&message);
+                }
+            }
         }
-        let result = self
-            .running
-            .as_mut()
-            .ok_or_else(|| "wallp is still starting".to_owned())
-            .and_then(|wallpaper| {
-                wallpaper
-                    .select_shader(path)
-                    .map_err(|error| error.to_string())
-            });
-        let _ = reply.send(result);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -145,6 +185,10 @@ impl ApplicationHandler<Event> for App {
                 Err(error) => self.fail(event_loop, error),
             }
         }
+    }
+
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.tray = None;
     }
 }
 
@@ -212,6 +256,15 @@ impl Wallpaper {
         let shader = ShaderFile::resolve(path)?.select(&mut self.renderer)?;
         self.shader = Some(shader);
         self.next_shader_check = Instant::now() + SHADER_INTERVAL;
+        Ok(())
+    }
+
+    fn select_builtin(&mut self) -> Result<()> {
+        if self.shader.is_some() {
+            pollster::block_on(self.renderer.set_shader(DEFAULT_SHADER))?;
+            self.shader = None;
+            eprintln!("wallp: loaded the built-in wallpaper");
+        }
         Ok(())
     }
 
