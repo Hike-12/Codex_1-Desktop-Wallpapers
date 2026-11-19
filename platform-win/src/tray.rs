@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf, process::Command};
 
-use core_engine::Result;
+use core_engine::{Result, shader::installed_packs};
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuId, MenuItem, PredefinedMenuItem},
@@ -9,8 +9,6 @@ use windows_sys::{
     Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
     w,
 };
-
-use crate::shader::installed_packs;
 
 const BUILT_IN: &str = "wallp.built-in";
 const OPEN: &str = "wallp.open-folder";

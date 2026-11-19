@@ -3,8 +3,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use core_engine::{Renderer, Result};
 use serde::Deserialize;
+
+use crate::{Renderer, Result};
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -122,7 +123,7 @@ mod tests {
     fn manifest_shader_must_stay_inside_the_pack() {
         assert!(validate_pack_shader(Path::new("./effects/sky.WGSL")).is_ok());
         assert!(validate_pack_shader(Path::new("../other.wgsl")).is_err());
-        assert!(validate_pack_shader(Path::new(r"C:\other.wgsl")).is_err());
+        assert!(validate_pack_shader(Path::new("/other.wgsl")).is_err());
         assert!(validate_pack_shader(Path::new("clip.mp4")).is_err());
     }
 }

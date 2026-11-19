@@ -1,5 +1,7 @@
 use std::error::Error;
 
+pub mod shader;
+
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub const DEFAULT_SHADER: &str = include_str!("default.wgsl");
@@ -23,6 +25,15 @@ impl<'window> Renderer<'window> {
     ) -> Result<Self> {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(target)?;
+        Self::from_surface(&instance, surface, width, height).await
+    }
+
+    pub async fn from_surface(
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'window>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,

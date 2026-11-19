@@ -226,6 +226,9 @@ dependencies = [
 name = "core-engine"
 version = "0.1.0"
 dependencies = [
+ "pollster",
+ "serde",
+ "toml",
  "wgpu",
 ]
 
@@ -1299,9 +1302,7 @@ dependencies = [
  "core-engine",
  "interprocess",
  "pollster",
- "serde",
  "tokio",
- "toml",
  "tray-icon",
  "widestring",
  "windows-sys 0.59.0",
@@ -1862,6 +1863,13 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
+]
+
+[[package]]
+name = "wallp"
+version = "0.1.0"
+dependencies = [
+ "platform-win",
 ]
 
 [[package]]

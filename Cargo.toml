@@ -1,7 +1,10 @@
 [workspace]
-members = ["core-engine", "platform-win"]
+members = ["core-engine", "platform-win", "wallp"]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+[workspace.dependencies]
+core-engine = { path = "core-engine" }

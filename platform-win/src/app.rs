@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_engine::{DEFAULT_SHADER, Renderer, Result};
+use core_engine::{DEFAULT_SHADER, Renderer, Result, shader::ShaderFile};
 use tokio::sync::oneshot;
 use tray_icon::menu::MenuEvent;
 use windows_sys::Win32::Foundation::RECT;
@@ -19,7 +19,6 @@ use winit::{
 use crate::{
     desktop::{Desktop, primary_bounds},
     ipc,
-    shader::ShaderFile,
     tray::{self, Action, Tray},
 };
 

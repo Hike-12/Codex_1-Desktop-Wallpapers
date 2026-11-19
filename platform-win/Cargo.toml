@@ -3,17 +3,11 @@ name = "platform-win"
 version.workspace = true
 edition.workspace = true
 
-[[bin]]
-name = "wallp"
-path = "src/main.rs"
-
 [target.'cfg(windows)'.dependencies]
-core-engine = { path = "../core-engine" }
+core-engine.workspace = true
 interprocess = { version = "2.4", features = ["tokio"] }
 pollster = "0.4"
-serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "rt", "sync", "time"] }
-toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 tray-icon = { version = "0.26", default-features = false }
 widestring = "1"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_RemoteDesktop", "Win32_UI_WindowsAndMessaging"] }
