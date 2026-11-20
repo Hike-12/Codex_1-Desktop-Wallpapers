@@ -21,7 +21,7 @@ set --
 suffix=
 if [[ "$target" == windows ]]; then
   set -- --enable-cross-compile --target-os=mingw32 --arch=x86_64 \
-    --cross-prefix=x86_64-w64-mingw32- --cc=x86_64-w64-mingw32-gcc-posix
+    --cross-prefix=x86_64-w64-mingw32- --cc=x86_64-w64-mingw32-gcc-posix \
     --extra-ldflags=-static
   suffix=.exe
 fi
