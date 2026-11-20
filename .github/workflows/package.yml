@@ -128,7 +128,7 @@ jobs:
           compression-level: 0
 
   publish-release:
-    name: Attach packages to ${{ env.RELEASE_TAG }}
+    name: Publish release packages
     runs-on: ubuntu-24.04
     needs: [package-windows, package-unix]
     steps:
