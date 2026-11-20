@@ -6,10 +6,28 @@ permissions:
   contents: read
 
 jobs:
+  windows-decoder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64-posix nasm
+          bash scripts/build-ffmpeg.sh decoder windows
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windows-decoder
+          path: decoder/*.exe
+          if-no-files-found: error
+          retention-days: 1
   package:
     name: ${{ matrix.archive }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    needs: windows-decoder
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -30,43 +48,46 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpulse-dev libwayland-dev libxkbcommon-dev libx11-dev pkg-config
+          sudo apt-get install -y libpulse-dev libwayland-dev libxkbcommon-dev libx11-dev pkg-config nasm
+      - name: Install macOS decoder build dependencies
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        run: brew install nasm
+      - name: Build the Unix decoder
+        if: runner.os != 'Windows'
+        run: bash scripts/build-ffmpeg.sh decoder
+      - uses: actions/download-artifact@v8.0.1
+        if: runner.os == 'Windows'
+        with:
+          name: windows-decoder
+          path: decoder
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
       - name: Build the release binary
+        env:
+          WALLP_FFMPEG_DIR: ${{ github.workspace }}/decoder
         run: cargo +stable build --locked --release --bin wallp
       - name: Check and archive the Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & target/release/wallp.exe --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Compress-Archive -LiteralPath target/release/wallp.exe,README.md -DestinationPath '${{ matrix.archive }}'
+          $check = Start-Process -FilePath target/release/wallp.exe -ArgumentList '--help' -WindowStyle Hidden -Wait -PassThru
+          if ($check.ExitCode -ne 0) { exit $check.ExitCode }
+          Compress-Archive -LiteralPath target/release/wallp.exe -DestinationPath '${{ matrix.archive }}'
+      - uses: actions/upload-artifact@v7.0.2
+        if: runner.os == 'Windows'
+        with:
+          name: wallp.exe
+          path: target/release/wallp.exe
+          if-no-files-found: error
       - name: Check and archive the Unix binary
         if: runner.os != 'Windows'
         shell: bash
         run: |
           ./target/release/wallp --help
-          tar -czf '${{ matrix.archive }}' -C target/release wallp -C "$GITHUB_WORKSPACE" README.md
+          tar -czf '${{ matrix.archive }}' -C target/release wallp
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
-          if-no-files-found: error
-          compression-level: 0
-  wallpapers:
-    name: wallp-wallpapers.zip
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - name: Archive the wallpaper collection
-        run: zip -q -r wallp-wallpapers.zip wallpapers README.md
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: wallp-wallpapers.zip
-          path: wallp-wallpapers.zip
           if-no-files-found: error
           compression-level: 0

@@ -1,6 +1,6 @@
 # Desktop Wallpapers architecture
 
-Desktop Wallpapers (`wallp`) is a Rust program that draws to the desktop background of a logged-in session. The native backend puts a surface where desktop icons and ordinary windows can appear above it. The shared renderer takes that surface and paints either a WGSL scene or a looping MP4. Each output can pause independently, while expensive inputs such as video decoding and audio capture are shared across outputs.
+Desktop Wallpapers (`wallp`) is a Rust program that draws to the desktop background of a logged-in session. The native backend puts a surface where desktop icons and ordinary windows can appear above it. The shared renderer takes that surface and paints a WGSL scene, a still image, or a looping video. Each output can pause independently, while expensive inputs such as video decoding and audio capture are shared across outputs.
 
 This guide describes the engine and its interactive wallpaper packs. The [README](README.md) covers installation, command syntax, and pack examples. The verification table records what shipped in v0.1.0.
 
@@ -140,7 +140,7 @@ flowchart LR
     B --> CROP
 ```
 
-1. **Probe.** The app canonicalizes the file and calls `ffprobe` with the MOV/MP4 demuxer and local file and pipe protocols. Video stream metadata provides dimensions, sample aspect ratio, rotation, and a positive duration. The engine computes upload dimensions that fit within 1280×720 while preserving display aspect ratio.
+1. **Probe.** The app canonicalizes the file and calls `ffprobe` with the MOV/MP4 or Matroska/WebM demuxer and local file and pipe protocols. Video stream metadata provides dimensions, sample aspect ratio, rotation, and a positive duration. The engine computes upload dimensions that fit within 1280×720 while preserving display aspect ratio.
 2. **Start.** FFmpeg selects the first real video stream and emits raw RGBA over stdout, paced from the input and filtered to 30 fps. Audio, subtitles, and data streams are disabled. Startup tries `-hwaccel auto` and checks for the first decoded frame. If that attempt fails, it can try software decoding. Both binaries are external runtime dependencies on `PATH`.
 3. **Share and draw.** A reader thread publishes a single latest complete frame with a serial and an estimated playback position. Slow outputs can skip old frames. Each output owns a texture and uploads only when the serial changes. The video shader samples it with a centered fill crop based on the video and output aspect ratios.
 4. **Suspend and loop.** The engine kills and reaps the decoder, joins its reader thread, and retains the last frame when all outputs become inactive. On resume it seeks to the retained frame's estimated position and plays the remainder once. At the end it starts an ordinary loop from zero. This avoids FFmpeg builds repeating the resume seek on every loop. Restart attempts are rate-limited after failures.
@@ -199,7 +199,9 @@ For a rendering problem, first try the built-in scene. If it draws, check the pa
 
 The workspace uses Rust 2024 and a committed Cargo lockfile. [CI](.github/workflows/ci.yml) runs formatting, Clippy with warnings denied, workspace tests, and a `wallp --help` smoke check on Windows, macOS, and Ubuntu. Native code is target-gated, so a Linux test run alone cannot exercise the Windows or macOS implementation.
 
-The manually dispatched [package workflow](.github/workflows/package.yml) builds optimized binaries with the lockfile and checks `--help` before archiving each executable with the README. It produces a Windows x86-64 ZIP and tarballs for Linux x86-64, macOS Apple Silicon, and macOS Intel. From v0.2.0, a separate job archives the 15 wallpaper packs, their preview gallery, and the README as `wallp-wallpapers.zip`. The workflow uploads Actions artifacts. Release publishing uses the verified archives and a `SHA256SUMS.txt` file. The packages require a supported desktop session. FFmpeg is installed separately for MP4 playback, and the macOS archives ship without Developer ID notarization. [Releases](https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/releases)
+The [package workflow](.github/workflows/package.yml) builds FFmpeg from pinned source, embeds the decoder and the 15 wallpaper packs, and builds optimized wallp executables with the lockfile. Each platform archive contains only its executable. Windows also publishes the raw executable for direct downloads. Release assets are verified against `SHA256SUMS.txt`. macOS archives ship without Developer ID notarization.
+
+On first run, [the library](core-engine/src/library.rs) stages the collection and installs it in a single rename. The [Windows gallery](platform-win/src/gallery.rs) runs as a separate instance of the same executable. It uses the existing [named pipe](platform-win/src/ipc.rs) for live selection and control. Imports copy the original media, generate a thumbnail, and publish a pack only after its files are ready. Images use the existing shader texture bindings. [Releases](https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/releases)
 
 | Area | v0.1.0 verification |
 | --- | --- |

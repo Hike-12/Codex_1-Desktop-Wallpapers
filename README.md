@@ -1,20 +1,27 @@
 # Desktop Wallpapers
 
-Desktop Wallpapers (`wallp`) is a Rust and wgpu live wallpaper engine for Windows, macOS, and Linux. It renders WGSL scenes and looping local MP4s on native desktop surfaces and pauses each display when the desktop backend detects fullscreen coverage.
+Desktop Wallpapers (`wallp`) is a Rust and wgpu live wallpaper engine for Windows, macOS, and Linux. It renders WGSL scenes and looping videos and still images on native desktop surfaces and pauses each display when the desktop backend detects fullscreen coverage.
 
 ## Get started
 
-Download the archive for your OS and CPU and the separate `wallp-wallpapers.zip` collection from the [latest release](https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/releases/latest). Extract both into the same folder and run the executable from a terminal. The collection includes 15 scenes, a preview gallery, and this README.
+### Windows
+
+1. Download **wallp.exe** and double-click it. [Latest release](https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/releases/latest)
+2. Maple Drift starts on your desktop and the gallery opens with all 15 wallpapers. Click any card to apply it.
+3. Choose **+ Upload Video / Image** or drop a file onto the gallery to import and apply it. Supported formats are MP4, WebM, MKV, JPG, PNG, and WebP.
+
+Close the gallery to keep the wallpaper running. Open it again from **Open Gallery** in the system tray or by double-clicking **wallp.exe**. The gallery controls pause, audio reactivity, rendering FPS, and whether wallp starts when you sign in. Use **Quit** in the tray to stop the wallpaper.
+
+Keep the executable somewhere permanent before enabling **Start with OS**. The ZIP is an alternate download and contains the same executable. Downloaded Windows builds are unsigned.
+
+### macOS and Linux
 
 | Platform | Package | Desktop requirements |
 | --- | --- | --- |
-| Windows x86-64 | `wallp-windows-x86_64.zip` | Windows 11 with Explorer. Start with `.\wallp.exe`. |
-| macOS Apple Silicon or Intel | `wallp-macos-arm64.tar.gz` or `wallp-macos-x86_64.tar.gz` | A logged-in macOS desktop. Start with `./wallp`. The CLI is distributed without Developer ID notarization. |
-| Linux x86-64 | `wallp-linux-x86_64.tar.gz` | An EWMH X11 window manager or a Wayland compositor with `zwlr_layer_shell_v1`. The binary is built on Ubuntu 24.04 and uses system graphics libraries and libpulse. Start with `./wallp`. |
+| macOS Apple Silicon or Intel | `wallp-macos-arm64.tar.gz` or `wallp-macos-x86_64.tar.gz` | A logged-in macOS desktop. The executable is not Developer ID notarized. |
+| Linux x86-64 | `wallp-linux-x86_64.tar.gz` | An EWMH X11 desktop or a Wayland compositor with `zwlr_layer_shell_v1`. The build uses system graphics libraries and libpulse. |
 
-Running with no arguments uses the built-in WGSL scene. Pass a `.wgsl` file, an `.mp4` file, or a pack directory to start with that wallpaper. Press Ctrl+C to stop. Video needs both `ffmpeg` and `ffprobe` on PATH. [FFmpeg downloads](https://ffmpeg.org/download.html)
-
-On Windows, the system tray lists installed packs and can switch to the built-in wallpaper, refresh the list, or quit. With the app running, use `.\wallp.exe set <file-or-pack>` from another terminal to switch live. On macOS and Linux, choose a file or pack at launch. WGSL edits reload during playback on all three platforms.
+Unpack the executable and run `./wallp`. The built-in collection is installed automatically and Maple Drift is the default. Pass a WGSL file, video, or pack folder as an argument to choose a scene at launch. Gallery controls and uploads are available on Windows.
 
 ## Wallpaper collection
 
@@ -45,21 +52,6 @@ On Windows, the system tray lists installed packs and can switch to the built-in
 | [Cloud Sea](wallpapers/cloud-sea) | Cloud banks roll between mountain ridges in shifting dawn light |
 | [First Light Conservatory](wallpapers/first-light-conservatory) | Water beads run down glass while ferns sway and morning light shifts |
 
-Pass a pack folder to the v0.2.0 or newer executable. On Windows, you can also copy the individual pack folders into `%APPDATA%\wallp\wallpapers` and choose **Refresh wallpapers** in the tray.
-
-```text
-Windows  .\wallp.exe .\wallpapers\tidal-islands
-macOS    ./wallp ./wallpapers/maple-drift
-Linux    ./wallp ./wallpapers/lantern-snow
-```
-
-From a source checkout, run a pack with Cargo.
-
-```sh
-cargo run --locked --bin wallp -- wallpapers/tidal-islands
-cargo run --locked --bin wallp -- wallpapers/midnight-wok
-```
-
 Windows reads Explorer's icon positions for the interactive packs. macOS and Linux use an animated demonstration layout. If Windows auto-arranges your icons, turn off **View → Auto arrange icons** in Explorer's desktop menu to place them freely. Ambient scenes animate on each supported platform. Cursor effects use pointer input where the desktop provides it. All 15 scenes render at the output resolution and ship with 3840×2160 textures upscaled from original generated artwork.
 
 ## Wallpaper packs
@@ -75,18 +67,18 @@ shader = "nebula.wgsl"
 
 Use `vs_main` and `fs_main` as entry points. The uniform buffer is at group 0, binding 0. Its first 16 bytes contain pixel resolution, animation time in seconds, and padding. For cursor and playback bands, copy the layout from the [built-in WGSL scene](core-engine/src/default.wgsl).
 
-Add an optional `artwork = "background.jpg"` to bind a JPEG as a shader texture. With artwork present, `desktop_icons = true` enables the animated icon field. See the [texture bindings](ARCHITECTURE.md#textured-shader-packs-and-desktop-icons) and the two pack shaders for examples.
+Add an optional `artwork = "background.jpg"` to bind a JPEG, PNG, or WebP as a shader texture. With artwork present, `desktop_icons = true` enables the animated icon field. See the [texture bindings](ARCHITECTURE.md#textured-shader-packs-and-desktop-icons) and the two pack shaders for examples.
 
-**MP4**
+**Video**
 
 ```toml
 name = "Ocean"
 video = "ocean.mp4"
 ```
 
-Video loops silently and fills each display with a centered crop. The upload is capped at 1280×720 and 30 fps. FFmpeg is asked to select a hardware decoder where available, with software decoding available as a fallback. [FFmpeg hardware decoding options](https://ffmpeg.org/ffmpeg.html)
+MP4, WebM, and MKV loop silently and fill the display with a centered crop. Playback is capped at 1280×720 and 30 decoded frames per second. Release builds bundle the decoder.
 
-On Windows, place pack folders in `%APPDATA%\wallp\wallpapers` and select **Refresh wallpapers** in the tray after adding them. A failed live selection leaves the current scene active.
+For hand-authored Windows packs, choose **Open wallpapers folder** and then **Refresh wallpapers** in the tray after adding the pack. A failed live selection leaves the current scene active. For scripts, `wallp set <file-or-pack>` continues to switch the running Windows wallpaper.
 
 ## Playback and power
 
@@ -123,3 +115,7 @@ One Windows 11 debug run used a single 1536×960 display on AC power with system
 | CPU share | 1.17% | 0.014% |
 | Busiest GPU engine, average | 11.88% | 0% sampled |
 | Working set | 274.5 MiB | 274.5 MiB |
+
+### Bundled video tools
+
+Release builds include FFmpeg and ffprobe under the LGPL. The tools run as separate processes. Developers building from source can use FFmpeg on PATH or embed their own binaries with `WALLP_FFMPEG_DIR` at build time. The same environment variable can point at replacement tools at runtime. [FFmpeg source and license notice](scripts/ffmpeg-notice.txt) · [Build recipe](scripts/build-ffmpeg.sh)
