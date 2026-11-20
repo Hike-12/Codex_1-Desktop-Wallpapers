@@ -10,12 +10,18 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 use crate::ipc::{self, Control, State};
 
 const TITLE: &str = "Wallpaper Gallery";
-const INK: Color32 = Color32::from_rgb(228, 239, 244);
-const MUTED: Color32 = Color32::from_rgb(156, 175, 185);
-const PANEL: Color32 = Color32::from_rgb(17, 31, 45);
-const ACCENT: Color32 = Color32::from_rgb(65, 214, 191);
-const BACKGROUND: Color32 = Color32::from_rgb(11, 20, 30);
-const GAP: f32 = 12.0;
+const INK: Color32 = Color32::from_rgb(240, 244, 248);
+const MUTED: Color32 = Color32::from_rgb(136, 148, 163);
+const PANEL: Color32 = Color32::from_rgb(18, 20, 26);
+const PANEL_HOVER: Color32 = Color32::from_rgb(26, 30, 39);
+const PANEL_ACTIVE: Color32 = Color32::from_rgb(19, 27, 34);
+const CONTROL_BAR: Color32 = Color32::from_rgb(14, 16, 21);
+const BORDER: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 16);
+const BORDER_HOVER: Color32 = Color32::from_rgba_premultiplied(45, 212, 191, 140);
+const ACCENT: Color32 = Color32::from_rgb(45, 212, 191);
+const ACCENT_DIM: Color32 = Color32::from_rgba_premultiplied(45, 212, 191, 35);
+const BACKGROUND: Color32 = Color32::from_rgb(10, 11, 14);
+const GAP: f32 = 14.0;
 
 pub fn run() -> Result<()> {
     let root = library::folder()?;
@@ -34,8 +40,22 @@ pub fn run() -> Result<()> {
             visuals.override_text_color = Some(INK);
             visuals.panel_fill = BACKGROUND;
             visuals.window_fill = PANEL;
-            visuals.selection.bg_fill = PANEL;
+            visuals.extreme_bg_color = BACKGROUND;
+            visuals.faint_bg_color = CONTROL_BAR;
+            visuals.selection.bg_fill = ACCENT_DIM;
             visuals.selection.stroke.color = ACCENT;
+            visuals.widgets.noninteractive.bg_fill = PANEL;
+            visuals.widgets.noninteractive.bg_stroke.color = BORDER;
+            visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
+            visuals.widgets.inactive.bg_fill = CONTROL_BAR;
+            visuals.widgets.inactive.bg_stroke.color = BORDER;
+            visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
+            visuals.widgets.hovered.bg_fill = PANEL_HOVER;
+            visuals.widgets.hovered.bg_stroke.color = ACCENT;
+            visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
+            visuals.widgets.active.bg_fill = PANEL_ACTIVE;
+            visuals.widgets.active.bg_stroke.color = ACCENT;
+            visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
             ctx.set_visuals(visuals);
             let mut gallery = Gallery {
                 root,
@@ -238,66 +258,145 @@ impl eframe::App for Gallery {
             .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(24))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::splat(GAP);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Wallpaper Gallery").size(32.0).strong());
-                    if ui
-                        .add_enabled(
-                            self.pending.is_none(),
-                            egui::Button::new(
-                                RichText::new("+ Upload Video / Image")
-                                    .color(BACKGROUND)
-                                    .size(16.0),
-                            )
-                            .fill(ACCENT),
-                        )
-                        .clicked()
-                    {
-                        let files = rfd::FileDialog::new()
-                            .set_parent(frame)
-                            .add_filter("Videos and images", library::MEDIA_EXTENSIONS)
-                            .pick_files();
-                        if let Some(files) = files.filter(|files| !files.is_empty()) {
-                            work = Some(Work::Import(files));
-                        }
-                    }
-                });
-                ui.label(
-                    RichText::new("Choose a wallpaper or drop an image or video here.")
-                        .color(MUTED),
-                );
-                if let Some(state) = &self.state {
-                    ui.add_enabled_ui(self.pending.is_none(), |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .button(if state.paused { "Resume" } else { "Pause" })
-                                .clicked()
-                            {
-                                work = Some(Work::Control(Control::Pause(!state.paused)));
-                            }
-                            let mut audio = state.audio;
-                            if ui.checkbox(&mut audio, "Audio Reactivity").changed() {
-                                work = Some(Work::Control(Control::Audio(audio)));
-                            }
-                            let mut fps = state.fps;
-                            egui::ComboBox::from_id_salt("fps")
-                                .selected_text(fps_label(fps))
-                                .show_ui(ui, |ui| {
-                                    for value in [15, 30, 60] {
-                                        ui.selectable_value(&mut fps, value, fps_label(value));
-                                    }
-                                });
-                            if fps != state.fps {
-                                work = Some(Work::Control(Control::Fps(fps)));
-                            }
-                            let mut startup = state.startup;
-                            if ui.checkbox(&mut startup, "Start with OS").changed() {
-                                work = Some(Work::Control(Control::Startup(startup)));
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Wallpaper Gallery")
+                                    .size(30.0)
+                                    .strong()
+                                    .color(INK),
+                            );
+                            if self.cards.iter().any(|c| {
+                                self.state.as_ref().and_then(|s| s.active.as_ref()) == Some(&c.path)
+                            }) {
+                                let badge_resp = ui
+                                    .allocate_response(Vec2::new(54.0, 20.0), egui::Sense::hover());
+                                let badge_rect = badge_resp.rect;
+                                ui.painter().rect_filled(badge_rect, 10, ACCENT_DIM);
+                                ui.painter().rect_stroke(
+                                    badge_rect,
+                                    10,
+                                    egui::Stroke::new(1.0_f32, ACCENT),
+                                    egui::StrokeKind::Inside,
+                                );
+                                ui.painter().text(
+                                    badge_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "ACTIVE",
+                                    egui::FontId::proportional(10.5),
+                                    ACCENT,
+                                );
                             }
                         });
+                        ui.label(
+                            RichText::new("Choose a wallpaper or drop an image or video here.")
+                                .color(MUTED)
+                                .size(13.5),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(
+                                self.pending.is_none(),
+                                egui::Button::new(
+                                    RichText::new("+ Upload Video / Image")
+                                        .color(Color32::from_rgb(10, 11, 14))
+                                        .size(14.0)
+                                        .strong(),
+                                )
+                                .fill(ACCENT)
+                                .corner_radius(8),
+                            )
+                            .clicked()
+                        {
+                            let files = rfd::FileDialog::new()
+                                .set_parent(frame)
+                                .add_filter("Videos and images", library::MEDIA_EXTENSIONS)
+                                .pick_files();
+                            if let Some(files) = files.filter(|files| !files.is_empty()) {
+                                work = Some(Work::Import(files));
+                            }
+                        }
+                    });
+                });
+                if let Some(state) = &self.state {
+                    ui.add_enabled_ui(self.pending.is_none(), |ui| {
+                        egui::Frame::new()
+                            .fill(CONTROL_BAR)
+                            .corner_radius(8)
+                            .stroke(egui::Stroke::new(1.0_f32, BORDER))
+                            .inner_margin(egui::Margin::symmetric(14, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    let pause_icon = if state.paused {
+                                        "▶ Resume"
+                                    } else {
+                                        "⏸ Pause"
+                                    };
+                                    if ui.button(RichText::new(pause_icon).size(13.0)).clicked() {
+                                        work = Some(Work::Control(Control::Pause(!state.paused)));
+                                    }
+                                    ui.separator();
+                                    let mut audio = state.audio;
+                                    if ui
+                                        .checkbox(
+                                            &mut audio,
+                                            RichText::new("Audio Reactivity").size(13.0),
+                                        )
+                                        .changed()
+                                    {
+                                        work = Some(Work::Control(Control::Audio(audio)));
+                                    }
+                                    ui.separator();
+                                    let mut fps = state.fps;
+                                    egui::ComboBox::from_id_salt("fps")
+                                        .selected_text(RichText::new(fps_label(fps)).size(13.0))
+                                        .show_ui(ui, |ui| {
+                                            for value in [15, 30, 60] {
+                                                ui.selectable_value(
+                                                    &mut fps,
+                                                    value,
+                                                    RichText::new(fps_label(value)).size(13.0),
+                                                );
+                                            }
+                                        });
+                                    if fps != state.fps {
+                                        work = Some(Work::Control(Control::Fps(fps)));
+                                    }
+                                    ui.separator();
+                                    let mut startup = state.startup;
+                                    if ui
+                                        .checkbox(
+                                            &mut startup,
+                                            RichText::new("Start with OS").size(13.0),
+                                        )
+                                        .changed()
+                                    {
+                                        work = Some(Work::Control(Control::Startup(startup)));
+                                    }
+                                });
+                            });
                     });
                 }
                 if hovering {
-                    ui.label(RichText::new("Drop to import and apply").color(ACCENT));
+                    egui::Frame::new()
+                        .fill(ACCENT_DIM)
+                        .corner_radius(8)
+                        .stroke(egui::Stroke::new(1.5_f32, ACCENT))
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(
+                                        "📥 Drop image or video here to import and apply",
+                                    )
+                                    .color(ACCENT)
+                                    .size(13.5)
+                                    .strong(),
+                                );
+                            });
+                        });
                 } else if self
                     .pending
                     .as_ref()
@@ -305,7 +404,11 @@ impl eframe::App for Gallery {
                 {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Importing wallpaper…");
+                        ui.label(
+                            RichText::new("Importing wallpaper…")
+                                .color(ACCENT)
+                                .size(13.0),
+                        );
                     });
                 }
                 if let Some(status) = &self.status {
@@ -362,17 +465,10 @@ fn fps_label(fps: u8) -> &'static str {
 }
 
 fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::Response {
-    let image_height = (width - 12.0) * 9.0 / 16.0;
-    let response = ui.add_sized(
-        [width, image_height + 53.0],
-        egui::Button::new("")
-            .fill(PANEL)
-            .corner_radius(6)
-            .stroke(egui::Stroke::new(
-                if active { 2.0_f32 } else { 0.0 },
-                ACCENT,
-            )),
-    );
+    let image_height = (width - 16.0) * 9.0 / 16.0;
+    let card_height = image_height + 52.0;
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, card_height), egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::Button,
@@ -381,11 +477,28 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::
             &card.name,
         )
     });
-    let painter = ui
-        .painter()
-        .with_clip_rect(response.rect.intersect(ui.clip_rect()));
-    let origin = response.rect.min + Vec2::splat(6.0);
-    let picture = egui::Rect::from_min_size(origin, Vec2::new(width - 12.0, image_height));
+    let is_hovered = response.hovered() || response.has_focus();
+    let bg_color = if active {
+        PANEL_ACTIVE
+    } else if is_hovered {
+        PANEL_HOVER
+    } else {
+        PANEL
+    };
+    let border_stroke = if active {
+        egui::Stroke::new(2.0_f32, ACCENT)
+    } else if is_hovered {
+        egui::Stroke::new(1.5_f32, BORDER_HOVER)
+    } else {
+        egui::Stroke::new(1.0_f32, BORDER)
+    };
+
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    painter.rect_filled(rect, 8, bg_color);
+    painter.rect_stroke(rect, 8, border_stroke, egui::StrokeKind::Inside);
+
+    let origin = rect.min + Vec2::new(8.0, 8.0);
+    let picture = egui::Rect::from_min_size(origin, Vec2::new(width - 16.0, image_height));
     if let Some(thumbnail) = &card.thumbnail {
         let [w, h] = thumbnail.size();
         let aspect = w as f32 / h as f32;
@@ -399,37 +512,61 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::
             egui::Rect::from_center_size(egui::pos2(0.5, 0.5), crop),
             Color32::WHITE,
         );
+        painter.rect_stroke(
+            picture,
+            4,
+            egui::Stroke::new(1.0_f32, BORDER),
+            egui::StrokeKind::Inside,
+        );
     } else {
         painter.rect_filled(picture, 4, BACKGROUND);
         painter.text(
             picture.center(),
             egui::Align2::CENTER_CENTER,
             "No preview",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(13.0),
             MUTED,
         );
     }
-    if response.hovered() || response.has_focus() {
+    if active {
+        let badge_origin = picture.right_top() + Vec2::new(-46.0, 6.0);
+        let badge_rect = egui::Rect::from_min_size(badge_origin, Vec2::new(40.0, 18.0));
+        painter.rect_filled(
+            badge_rect,
+            4,
+            Color32::from_rgba_premultiplied(10, 11, 14, 210),
+        );
         painter.rect_stroke(
-            response.rect.shrink(1.0),
-            6,
-            egui::Stroke::new(2.0_f32, ACCENT),
+            badge_rect,
+            4,
+            egui::Stroke::new(1.0_f32, ACCENT),
             egui::StrokeKind::Inside,
         );
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "ACTIVE",
+            egui::FontId::proportional(9.5),
+            ACCENT,
+        );
     }
-    let text = egui::Rect::from_min_max(
-        picture.left_bottom() + Vec2::new(6.0, 0.0),
-        response.rect.max - Vec2::splat(6.0),
+    let text_rect = egui::Rect::from_min_max(
+        picture.left_bottom() + Vec2::new(2.0, 4.0),
+        rect.max - Vec2::new(8.0, 4.0),
     );
-    ui.put(
-        text,
-        egui::Label::new(RichText::new(&card.name).size(16.0).color(if active {
-            ACCENT
-        } else {
-            INK
-        }))
-        .truncate()
-        .sense(egui::Sense::hover()),
+    let text_color = if active {
+        ACCENT
+    } else if is_hovered {
+        INK
+    } else {
+        Color32::from_rgb(205, 215, 225)
+    };
+    painter.text(
+        egui::pos2(text_rect.min.x, text_rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        &card.name,
+        egui::FontId::proportional(14.5),
+        text_color,
     );
     response
 }
