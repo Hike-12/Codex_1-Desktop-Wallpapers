@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_engine::{FrameInputs, Renderer, Result, shader::ShaderFile};
+use core_engine::{FrameInputs, Renderer, Result, shader::SceneFile};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
@@ -38,6 +38,8 @@ use crate::{
 };
 
 mod fullscreen;
+
+const FRAME_CALLBACK_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub fn run(path: Option<PathBuf>, audio: bool, battery_saver: bool) -> Result<()> {
     let connection = Connection::connect_to_env()?;
@@ -91,7 +93,7 @@ struct Desktop {
     sway: bool,
     audio: Option<Playback>,
     battery: BatterySaver,
-    shader: Option<ShaderFile>,
+    shader: Option<SceneFile>,
     next_shader_check: Instant,
 }
 
@@ -182,9 +184,19 @@ impl Desktop {
                 wallpaper.renderer = Some(renderer);
             }
         }
+        let active = self
+            .wallpapers
+            .iter()
+            .any(|wallpaper| wallpaper.configure.is_some() && wallpaper.clock.paused_at.is_none());
         if let Some(audio) = &self.audio {
-            audio.set_active(self.wallpapers.iter().any(|wallpaper| {
-                wallpaper.configure.is_some() && wallpaper.clock.paused_at.is_none()
+            audio.set_active(active && !self.shader.as_ref().is_some_and(SceneFile::has_video));
+        }
+        if let Some(scene) = &self.shader {
+            scene.set_active(self.wallpapers.iter().any(|wallpaper| {
+                wallpaper.configure.is_some()
+                    && wallpaper.clock.paused_at.is_none()
+                    && (wallpaper.ready
+                        || now < wallpaper.clock.next_frame + FRAME_CALLBACK_TIMEOUT)
             }));
         }
         let drawing = self
@@ -220,8 +232,22 @@ impl Desktop {
             .filter(|wallpaper| wallpaper.can_draw())
             .map(|wallpaper| wallpaper.clock.next_frame)
             .chain(self.battery.deadline())
+            .chain(self.video_deadline(now))
             .min();
         Ok(next.map(|deadline| deadline.saturating_duration_since(Instant::now())))
+    }
+
+    fn video_deadline(&self, now: Instant) -> Option<Instant> {
+        if !self.shader.as_ref().is_some_and(SceneFile::has_video) {
+            return None;
+        }
+        // Some compositors only report occlusion by withholding frame callbacks.
+        self.wallpapers
+            .iter()
+            .filter(|wallpaper| !wallpaper.ready && wallpaper.clock.paused_at.is_none())
+            .map(|wallpaper| wallpaper.clock.next_frame + FRAME_CALLBACK_TIMEOUT)
+            .filter(|deadline| *deadline > now)
+            .min()
     }
 }
 

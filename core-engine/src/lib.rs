@@ -1,7 +1,8 @@
-use std::error::Error;
+use std::{error::Error, sync::Arc};
 
 pub mod audio;
 pub mod shader;
+mod video;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -24,8 +25,10 @@ pub struct Renderer<'window> {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::PipelineLayout,
+    bind_layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    video: Option<VideoPainter>,
 }
 
 impl<'window> Renderer<'window> {
@@ -118,14 +121,100 @@ impl<'window> Renderer<'window> {
             config,
             pipeline,
             layout,
+            bind_layout,
             globals,
             bind_group,
+            video: None,
         })
     }
 
     pub async fn set_shader(&mut self, source: &str) -> Result<()> {
         self.pipeline = self.prepare_shader(source).await?;
+        self.video = None;
         Ok(())
+    }
+
+    async fn prepare_video(&self, video: Arc<video::Video>) -> Result<VideoPainter> {
+        let size = wgpu::Extent3d {
+            width: video.width,
+            height: video.height,
+            depth_or_array_layers: 1,
+        };
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("MP4 frame"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("MP4 frame layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MP4 frame bindings"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("MP4 pipeline layout"),
+                bind_group_layouts: &[&self.bind_layout, &layout],
+                push_constant_ranges: &[],
+            });
+        let pipeline = compile(
+            &self.device,
+            &pipeline_layout,
+            self.config.format,
+            include_str!("video.wgsl"),
+        )
+        .await?;
+        Ok(VideoPainter {
+            video,
+            texture,
+            size,
+            bind_group,
+            pipeline,
+            serial: 0,
+        })
     }
 
     async fn prepare_shader(&self, source: &str) -> Result<wgpu::RenderPipeline> {
@@ -172,6 +261,9 @@ impl<'window> Renderer<'window> {
         let uniforms = values.map(f32::to_le_bytes);
         self.queue
             .write_buffer(&self.globals, 0, uniforms.as_flattened());
+        if let Some(video) = &mut self.video {
+            video.upload(&self.queue);
+        }
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -186,13 +278,47 @@ impl<'window> Renderer<'window> {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
+            if let Some(video) = &self.video {
+                pass.set_pipeline(&video.pipeline);
+                pass.set_bind_group(1, &video.bind_group, &[]);
+            } else {
+                pass.set_pipeline(&self.pipeline);
+            }
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         frame.present();
         Ok(true)
+    }
+}
+
+struct VideoPainter {
+    video: Arc<video::Video>,
+    texture: wgpu::Texture,
+    size: wgpu::Extent3d,
+    bind_group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
+    serial: u64,
+}
+
+impl VideoPainter {
+    fn upload(&mut self, queue: &wgpu::Queue) {
+        if let Some(frame) = self.video.frame()
+            && frame.serial != self.serial
+        {
+            queue.write_texture(
+                self.texture.as_image_copy(),
+                &frame.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.size.width * 4),
+                    rows_per_image: Some(self.size.height),
+                },
+                self.size,
+            );
+            self.serial = frame.serial;
+        }
     }
 }
 

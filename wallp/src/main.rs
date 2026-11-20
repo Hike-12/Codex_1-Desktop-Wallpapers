@@ -21,7 +21,8 @@ use platform_mac::run as run_wallpaper;
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    const USAGE: &str = "Usage: wallp [--audio] [--battery-saver] [shader.wgsl | pack-folder]";
+    const USAGE: &str =
+        "Usage: wallp [--audio] [--battery-saver] [shader.wgsl | clip.mp4 | pack-folder]";
     let mut shader = None;
     let mut audio = false;
     let mut battery_saver = false;
@@ -33,7 +34,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some("--battery-saver") => battery_saver = true,
             Some("--help" | "-h") => {
                 println!(
-                    "{USAGE}\n\n  --audio          React to system playback audio\n  --battery-saver  Pause rendering on battery\n\nShader edits reload while wallp is running. Press Ctrl+C to stop."
+                    "{USAGE}\n\n  --audio          React to system playback audio\n  --battery-saver  Pause rendering on battery\n\nShader edits reload while wallp is running. MP4 needs FFmpeg on PATH.\nPress Ctrl+C to stop."
                 );
                 return Ok(());
             }

@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_engine::{FrameInputs, Renderer, Result, shader::ShaderFile};
+use core_engine::{FrameInputs, Renderer, Result, shader::SceneFile};
 use objc2_app_kit::NSEvent;
 use winit::{
     application::ApplicationHandler,
@@ -26,7 +26,7 @@ const SHADER_INTERVAL: Duration = Duration::from_millis(500);
 const DESKTOP_INTERVAL: Duration = Duration::from_secs(1);
 
 pub fn run(shader: Option<PathBuf>, audio: bool, battery_saver: bool) -> Result<()> {
-    let shader = shader.and_then(|path| match ShaderFile::resolve(path) {
+    let shader = shader.and_then(|path| match SceneFile::resolve(path) {
         Ok(shader) => Some(shader),
         Err(error) => {
             eprintln!("wallp: {error}");
@@ -57,7 +57,7 @@ pub fn run(shader: Option<PathBuf>, audio: bool, battery_saver: bool) -> Result<
 
 struct App {
     wallpapers: Vec<Wallpaper>,
-    shader: Option<ShaderFile>,
+    shader: Option<SceneFile>,
     capture: Option<audio::Capture>,
     audio_requested: bool,
     battery_saver: bool,
@@ -134,7 +134,10 @@ impl App {
             .wallpapers
             .iter()
             .any(|wallpaper| wallpaper.paused_since.is_none());
-        self.update_capture(visible);
+        self.update_capture(visible && !self.shader.as_ref().is_some_and(SceneFile::has_video));
+        if let Some(scene) = &self.shader {
+            scene.set_active(visible);
+        }
         if visible && let Some(shader) = &mut self.shader {
             if now >= self.next_shader_check {
                 self.next_shader_check = now + SHADER_INTERVAL;
@@ -257,7 +260,7 @@ impl Wallpaper {
     fn new(
         event_loop: &ActiveEventLoop,
         display: Display,
-        shader: Option<&ShaderFile>,
+        shader: Option<&SceneFile>,
     ) -> Result<Self> {
         let window = Arc::new(
             event_loop.create_window(

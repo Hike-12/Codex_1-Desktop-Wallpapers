@@ -7,7 +7,7 @@ use std::{
 
 use core_engine::{
     DEFAULT_SHADER, FrameInputs, Renderer, Result,
-    shader::{ShaderFile, set_shader_all},
+    shader::{SceneFile, set_shader_all},
 };
 use tokio::sync::oneshot;
 use tray_icon::menu::MenuEvent;
@@ -31,7 +31,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const DESKTOP_INTERVAL: Duration = Duration::from_millis(250);
 const SHADER_INTERVAL: Duration = Duration::from_millis(500);
 
-const USAGE: &str = "Usage: wallp [--audio] [--battery-saver] [shader.wgsl | pack-folder]\n       wallp set <shader.wgsl | pack-folder>";
+const USAGE: &str = "Usage: wallp [--audio] [--battery-saver] [shader.wgsl | clip.mp4 | pack-folder]\n       wallp set <shader.wgsl | clip.mp4 | pack-folder>";
 
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
@@ -62,7 +62,7 @@ pub fn run() -> Result<()> {
                      --audio reads system playback audio for the shader.\n\
                      --battery-saver pauses wallpapers while running on battery.\n\
                      Packs in %APPDATA%\\wallp\\wallpapers appear in the tray. Each needs a manifest.toml\n\
-                     with a name and a relative shader path, for example shader = \"shader.wgsl\"."
+                     with a name and either a relative shader or video path. MP4 needs FFmpeg on PATH."
                 );
                 return Ok(());
             }
@@ -123,7 +123,7 @@ impl App {
         };
         match tray.action(&event.id)? {
             Some(Action::BuiltIn) => wallpaper.select_builtin()?,
-            Some(Action::Select(path)) => wallpaper.select_shader(path)?,
+            Some(Action::Select(path)) => wallpaper.select_scene(path)?,
             Some(Action::Quit) => event_loop.exit(),
             None => {}
         }
@@ -166,7 +166,7 @@ impl ApplicationHandler<Event> for App {
                     .ok_or_else(|| "wallp is still starting".to_owned())
                     .and_then(|wallpaper| {
                         wallpaper
-                            .select_shader(path)
+                            .select_scene(path)
                             .map_err(|error| error.to_string())
                     });
                 let _ = reply.send(result);
@@ -224,7 +224,7 @@ impl ApplicationHandler<Event> for App {
 struct Wallpapers {
     surfaces: Vec<Wallpaper>,
     layer: DesktopLayer,
-    shader: Option<ShaderFile>,
+    shader: Option<SceneFile>,
     audio: Option<PlaybackAudio>,
     battery_saver: bool,
     next_desktop_check: Instant,
@@ -238,7 +238,7 @@ impl Wallpapers {
         audio: bool,
         battery_saver: bool,
     ) -> Result<Self> {
-        let shader = shader.and_then(|path| match ShaderFile::resolve(path) {
+        let shader = shader.and_then(|path| match SceneFile::resolve(path) {
             Ok(shader) => Some(shader),
             Err(error) => {
                 eprintln!("wallp: {error}");
@@ -270,7 +270,7 @@ impl Wallpapers {
         Ok(wallpapers)
     }
 
-    fn select_shader(&mut self, path: PathBuf) -> Result<()> {
+    fn select_scene(&mut self, path: PathBuf) -> Result<()> {
         if self.surfaces.is_empty() {
             return Err("No desktop display is available".into());
         }
@@ -279,7 +279,7 @@ impl Wallpapers {
             .iter_mut()
             .map(|wallpaper| &mut wallpaper.renderer)
             .collect::<Vec<_>>();
-        let shader = ShaderFile::resolve(path)?.select_all(&mut renderers)?;
+        let shader = SceneFile::resolve(path)?.select_all(&mut renderers)?;
         self.shader = Some(shader);
         self.next_shader_check = Instant::now() + SHADER_INTERVAL;
         Ok(())
@@ -360,13 +360,6 @@ impl Wallpapers {
             };
             wallpaper.update_pause(reason, now);
         }
-        if let Some(audio) = &self.audio {
-            audio.set_active(
-                self.surfaces
-                    .iter()
-                    .any(|wallpaper| wallpaper.paused_at.is_none()),
-            );
-        }
         self.next_desktop_check = now + DESKTOP_INTERVAL;
         Ok(())
     }
@@ -377,12 +370,17 @@ impl Wallpapers {
             self.refresh_desktop(event_loop, now)?;
         }
         let mut deadline = self.next_desktop_check;
-        if let Some(shader) = &mut self.shader
-            && self
-                .surfaces
-                .iter()
-                .any(|wallpaper| wallpaper.paused_at.is_none())
-        {
+        let active = self
+            .surfaces
+            .iter()
+            .any(|wallpaper| wallpaper.paused_at.is_none());
+        if let Some(audio) = &self.audio {
+            audio.set_active(active && !self.shader.as_ref().is_some_and(SceneFile::has_video));
+        }
+        if let Some(scene) = &self.shader {
+            scene.set_active(active);
+        }
+        if active && let Some(shader) = &mut self.shader {
             if now >= self.next_shader_check {
                 self.next_shader_check = now + SHADER_INTERVAL;
                 let mut renderers = self

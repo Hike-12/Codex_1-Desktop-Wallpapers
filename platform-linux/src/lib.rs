@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_engine::{Result, shader::ShaderFile};
+use core_engine::{Result, shader::SceneFile};
 
 mod audio;
 mod power;
@@ -29,8 +29,8 @@ pub fn run(shader: Option<PathBuf>, audio: bool, battery_saver: bool) -> Result<
     }
 }
 
-fn initial_shader(path: Option<PathBuf>) -> Option<ShaderFile> {
-    path.and_then(|path| match ShaderFile::resolve(path) {
+fn initial_shader(path: Option<PathBuf>) -> Option<SceneFile> {
+    path.and_then(|path| match SceneFile::resolve(path) {
         Ok(shader) => Some(shader),
         Err(error) => {
             eprintln!("wallp: {error}");

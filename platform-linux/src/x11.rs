@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_engine::{FrameInputs, Renderer, Result, shader::ShaderFile};
+use core_engine::{FrameInputs, Renderer, Result, shader::SceneFile};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -66,7 +66,7 @@ struct App {
     audio: Option<Playback>,
     battery: BatterySaver,
     pointer: Option<PhysicalPosition<i32>>,
-    shader: Option<ShaderFile>,
+    shader: Option<SceneFile>,
     next_cover_check: Instant,
     next_shader_check: Instant,
     error: Option<Box<dyn std::error::Error>>,
@@ -132,7 +132,10 @@ impl App {
             .iter()
             .any(|wallpaper| wallpaper.clock.paused_at.is_none());
         if let Some(audio) = &self.audio {
-            audio.set_active(active);
+            audio.set_active(active && !self.shader.as_ref().is_some_and(SceneFile::has_video));
+        }
+        if let Some(scene) = &self.shader {
+            scene.set_active(active);
         }
         if !active {
             return Ok(deadline);
