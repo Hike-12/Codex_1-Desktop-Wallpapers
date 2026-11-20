@@ -63,10 +63,21 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
       - name: Build the release binary
+        if: runner.os != 'Windows'
+        env:
+          WALLP_FFMPEG_DIR: ${{ github.workspace }}/decoder
+        run: cargo +stable build --locked --release --bin wallp
+      - name: Build the Windows release binary
+        if: runner.os == 'Windows'
+        shell: pwsh
         env:
           WALLP_FFMPEG_DIR: ${{ github.workspace }}/decoder
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo +stable build --locked --release --bin wallp
+        run: |
+          cargo +stable build --locked --release --bin wallp --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force target/release | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/wallp.exe target/release/wallp.exe
       - name: Check and archive the Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
