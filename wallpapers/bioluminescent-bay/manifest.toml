@@ -1,0 +1,3 @@
+name = "Bioluminescent Bay"
+shader = "scene.wgsl"
+artwork = "background.jpg"
