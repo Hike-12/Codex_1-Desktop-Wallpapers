@@ -65,6 +65,7 @@ jobs:
       - name: Build the release binary
         env:
           WALLP_FFMPEG_DIR: ${{ github.workspace }}/decoder
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
         run: cargo +stable build --locked --release --bin wallp
       - name: Check and archive the Windows binary
         if: runner.os == 'Windows'
