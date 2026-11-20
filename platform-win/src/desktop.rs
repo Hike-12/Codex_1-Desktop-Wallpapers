@@ -27,6 +27,7 @@ use windows_sys::{
     w,
 };
 use winit::{
+    platform::windows::WindowAttributesExtWindows,
     raw_window_handle::{HasWindowHandle, RawWindowHandle, Win32WindowHandle},
     window::{Window, WindowAttributes},
 };
@@ -66,6 +67,9 @@ impl DesktopLayer {
                 .with_active(false)
                 .with_decorations(false)
                 .with_resizable(false)
+                // Windows requires this style at creation. Adding it later to
+                // an Explorer child fails with ERROR_INVALID_PARAMETER.
+                .with_no_redirection_bitmap(true)
                 .with_parent_window(Some(handle))
         })
     }
@@ -85,15 +89,16 @@ impl Desktop {
                 window,
                 GWL_STYLE,
                 style | (WS_DISABLED | WS_CLIPSIBLINGS) as isize,
-            )?;
+            )
+            .map_err(|error| format!("Set wallpaper child styles: {error}"))?;
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-            let flags =
-                WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP;
+            let flags = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW;
             set_style(
                 window,
                 GWL_EXSTYLE,
                 (style & !(WS_EX_APPWINDOW as isize)) | flags as isize,
-            )?;
+            )
+            .map_err(|error| format!("Set wallpaper composition styles: {error}"))?;
             if GetParent(window) != layer.parent {
                 return Err("The wallpaper window is outside Explorer's desktop layer".into());
             }
@@ -178,17 +183,28 @@ impl Composition {
         // Use a composition swap chain. It has no HWND to promote to fullscreen
         // and DWM clips the visual to our disabled child window.
         unsafe {
-            let device: IDCompositionDevice = DCompositionCreateDevice(None::<&IDXGIDevice>)?;
-            let target = device.CreateTargetForHwnd(CompositionHwnd(window), false)?;
-            let visual = device.CreateVisual()?;
-            target.SetRoot(&visual)?;
+            let device: IDCompositionDevice = DCompositionCreateDevice(None::<&IDXGIDevice>)
+                .map_err(|error| format!("Create DirectComposition device: {error}"))?;
+            let target = device
+                .CreateTargetForHwnd(CompositionHwnd(window), false)
+                .map_err(|error| {
+                    format!("Bind DirectComposition to the wallpaper child: {error}")
+                })?;
+            let visual = device
+                .CreateVisual()
+                .map_err(|error| format!("Create wallpaper visual: {error}"))?;
+            target
+                .SetRoot(&visual)
+                .map_err(|error| format!("Attach wallpaper visual: {error}"))?;
             // wgpu takes its own reference to the visual.
             let surface = instance.create_surface_unsafe(
                 wgpu::SurfaceTargetUnsafe::CompositionVisual(visual.as_raw()),
             )?;
             let renderer =
                 pollster::block_on(Renderer::from_surface(&instance, surface, width, height))?;
-            device.Commit()?;
+            device
+                .Commit()
+                .map_err(|error| format!("Commit wallpaper composition: {error}"))?;
             Ok((
                 renderer,
                 Self {
@@ -354,6 +370,10 @@ pub fn on_battery() -> bool {
 }
 
 fn wallpaper_layer() -> io::Result<DesktopLayer> {
+    find_layer(true)
+}
+
+fn find_layer(prepare: bool) -> io::Result<DesktopLayer> {
     unsafe {
         let progman = FindWindowW(PROGMAN, ptr::null());
         if progman.is_null() {
@@ -371,15 +391,17 @@ fn wallpaper_layer() -> io::Result<DesktopLayer> {
         //    WorkerW window, and 0x052C spawns a separate WorkerW sibling immediately
         //    behind it in Z-order. On this hierarchy, the wallpaper window is parented
         //    to that sibling WorkerW at HWND_BOTTOM.
-        SendMessageTimeoutW(
-            progman,
-            0x052C,
-            0xD,
-            1,
-            SMTO_ABORTIFHUNG,
-            1_000,
-            ptr::null_mut(),
-        );
+        if prepare {
+            SendMessageTimeoutW(
+                progman,
+                0x052C,
+                0xD,
+                1,
+                SMTO_ABORTIFHUNG,
+                1_000,
+                ptr::null_mut(),
+            );
+        }
 
         let icons = child(progman, ICONS);
         if !icons.is_null() {
@@ -451,6 +473,48 @@ unsafe fn set_style(window: HWND, index: i32, style: isize) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires an interactive Explorer session and a DirectX 12 GPU"]
+    fn composition_presents_to_a_hidden_explorer_child() -> Result<()> {
+        use winit::{
+            application::ApplicationHandler,
+            event::WindowEvent,
+            event_loop::{ActiveEventLoop, EventLoop},
+            platform::windows::EventLoopBuilderExtWindows,
+            window::WindowId,
+        };
+
+        #[derive(Default)]
+        struct Probe(Option<Result<()>>);
+        impl ApplicationHandler for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                self.0 = Some((|| {
+                    let layer = find_layer(false)?;
+                    let window = event_loop.create_window(layer.window_attributes()?)?;
+                    let mut bounds: RECT = unsafe { std::mem::zeroed() };
+                    if unsafe { GetWindowRect(layer.parent, &mut bounds) } == 0 {
+                        return Err(io::Error::last_os_error().into());
+                    }
+                    bounds.right = bounds.left + 64;
+                    bounds.bottom = bounds.top + 64;
+                    let desktop = Desktop::attach(&window, layer, bounds)?;
+                    let (mut renderer, _composition) = desktop.renderer(64, 64)?;
+                    assert!(renderer.render(64, 64, 0.0)?);
+                    Ok(())
+                })());
+                event_loop.exit();
+            }
+
+            fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+        }
+        let mut probe = Probe::default();
+        EventLoop::builder()
+            .with_any_thread(true)
+            .build()?
+            .run_app(&mut probe)?;
+        probe.0.expect("desktop probe did not run")
+    }
 
     #[test]
     #[ignore = "requires a Windows session with a DirectX 12 GPU"]
