@@ -2,7 +2,6 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -31,7 +30,7 @@ use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
 use crate::{
     audio::PlaybackAudio,
-    desktop::{self, Desktop, DesktopLayer},
+    desktop::{self, Composition, Desktop, DesktopLayer},
     gallery, icons,
     ipc::{self, Control, State},
     tray::{self, Action, Tray},
@@ -192,7 +191,7 @@ impl App {
             && child.try_wait()?.is_none()
         {
             unsafe {
-                let window = FindWindowW(std::ptr::null(), w!("Wallpaper Gallery"));
+                let window = FindWindowW(std::ptr::null(), w!("Stilltide"));
                 if !window.is_null() {
                     ShowWindow(window, SW_RESTORE);
                     SetForegroundWindow(window);
@@ -403,31 +402,19 @@ impl ApplicationHandler<Event> for App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        let Some(wallpaper) = running
-            .surfaces
-            .iter_mut()
-            .find(|wallpaper| wallpaper.window.id() == id)
-        else {
-            return;
-        };
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested if wallpaper.paused_at.is_none() => {
-                let audio_bands = running
-                    .audio
-                    .as_ref()
-                    .map_or([0.0; 16], PlaybackAudio::bands);
-                if let Err(error) = wallpaper.draw(audio_bands, self.cursor_effects) {
-                    self.fail(event_loop, error);
-                }
-            }
-            _ => {}
+        if event == WindowEvent::CloseRequested
+            && running
+                .surfaces
+                .iter()
+                .any(|wallpaper| wallpaper.window.id() == id)
+        {
+            event_loop.exit();
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(wallpaper) = &mut self.running {
-            match wallpaper.update(event_loop) {
+            match wallpaper.update(event_loop, self.cursor_effects) {
                 Ok(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
                 Err(error) => self.fail(event_loop, error),
             }
@@ -585,7 +572,6 @@ impl Wallpapers {
             if !wallpaper.desktop.is_attached() {
                 return Err("Explorer's wallpaper window was closed".into());
             }
-            wallpaper.desktop.keep_behind_icons()?;
             if bounds_key(wallpaper.bounds) != bounds_key(bounds) {
                 wallpaper.desktop.fit(bounds)?;
                 wallpaper.bounds = bounds;
@@ -605,7 +591,7 @@ impl Wallpapers {
         Ok(())
     }
 
-    fn update(&mut self, event_loop: &ActiveEventLoop) -> Result<Instant> {
+    fn update(&mut self, event_loop: &ActiveEventLoop, cursor_effects: bool) -> Result<Instant> {
         let now = Instant::now();
         let desktop_due = now >= self.next_desktop_check;
         if desktop_due {
@@ -657,14 +643,16 @@ impl Wallpapers {
                 }
             }
         }
-        for wallpaper in self
-            .surfaces
-            .iter_mut()
-            .filter(|wallpaper| wallpaper.paused_at.is_none())
-        {
+        let audio_bands = self.audio.as_ref().map_or([0.0; 16], PlaybackAudio::bands);
+        for wallpaper in &mut self.surfaces {
+            let safe = wallpaper.desktop.show_behind_icons();
+            if !safe || wallpaper.paused_at.is_some() {
+                continue;
+            }
             if now >= wallpaper.next_frame {
                 wallpaper.next_frame = now + Duration::from_secs_f64(1.0 / f64::from(self.fps));
-                wallpaper.window.request_redraw();
+                // Explorer may suppress normal redraw events for a desktop child.
+                wallpaper.draw(audio_bands, cursor_effects)?;
             }
             deadline = deadline.min(wallpaper.next_frame);
         }
@@ -701,7 +689,8 @@ fn set_startup(enabled: bool) -> Result<()> {
 
 struct Wallpaper {
     renderer: Renderer<'static>,
-    window: Arc<Window>,
+    composition: Composition,
+    window: Window,
     desktop: Desktop,
     monitor: isize,
     bounds: RECT,
@@ -719,17 +708,16 @@ impl Wallpaper {
         monitor: isize,
         bounds: RECT,
     ) -> Result<Self> {
-        let window = Arc::new(
-            event_loop
-                .create_window(layer.window_attributes()?)
-                .map_err(|error| format!("Create desktop child window: {error}"))?,
-        );
+        let window = event_loop
+            .create_window(layer.window_attributes()?)
+            .map_err(|error| format!("Create desktop child window: {error}"))?;
         let desktop = Desktop::attach(&window, layer, bounds)?;
         let size = window.inner_size();
-        let renderer = pollster::block_on(Renderer::new(window.clone(), size.width, size.height))?;
+        let (renderer, composition) = desktop.renderer(size.width, size.height)?;
         let now = Instant::now();
         Ok(Self {
             renderer,
+            composition,
             window,
             desktop,
             monitor,
@@ -768,11 +756,13 @@ impl Wallpaper {
                 .flatten(),
             audio_bands,
         };
-        if self
+        let rendered = self
             .renderer
-            .render_with_inputs(size.width, size.height, time, &inputs)?
-            && !self.presented
-        {
+            .render_with_inputs(size.width, size.height, time, &inputs)?;
+        if !rendered {
+            // A lost surface can replace the visual's swap chain during reconfiguration.
+            self.composition.commit()?;
+        } else if !self.presented {
             self.presented = true;
             eprintln!("wallp: wallpaper is rendering");
         }

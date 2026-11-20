@@ -1,5 +1,18 @@
 use std::{io, num::NonZeroIsize, ptr};
 
+use core_engine::{Renderer, Result};
+use windows::{
+    Win32::{
+        Foundation::HWND as CompositionHwnd,
+        Graphics::{
+            DirectComposition::{
+                DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget,
+            },
+            Dxgi::IDXGIDevice,
+        },
+    },
+    core::Interface,
+};
 use windows_sys::{
     Win32::{
         Foundation::{GetLastError, HWND, LPARAM, POINT, RECT, SetLastError},
@@ -31,12 +44,12 @@ pub struct Desktop {
 pub struct DesktopLayer {
     parent: HWND,
     above: HWND,
+    icon_anchor: HWND,
 }
 
 impl DesktopLayer {
     pub fn find() -> io::Result<Self> {
-        let (parent, above) = wallpaper_layer()?;
-        Ok(Self { parent, above })
+        wallpaper_layer()
     }
 
     pub fn window_attributes(self) -> io::Result<WindowAttributes> {
@@ -48,7 +61,7 @@ impl DesktopLayer {
         // so it never has a top-level window that can be promoted on activation.
         Ok(unsafe {
             Window::default_attributes()
-                .with_title("Desktop Wallpapers")
+                .with_title("Stilltide")
                 .with_visible(false)
                 .with_active(false)
                 .with_decorations(false)
@@ -74,7 +87,8 @@ impl Desktop {
                 style | (WS_DISABLED | WS_CLIPSIBLINGS) as isize,
             )?;
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-            let flags = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW;
+            let flags =
+                WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP;
             set_style(
                 window,
                 GWL_EXSTYLE,
@@ -105,7 +119,7 @@ impl Desktop {
                     origin.y,
                     bounds.right - bounds.left,
                     bounds.bottom - bounds.top,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+                    SWP_NOACTIVATE | SWP_FRAMECHANGED,
                 ) == 0
             {
                 return Err(io::Error::last_os_error());
@@ -114,36 +128,80 @@ impl Desktop {
         Ok(())
     }
 
-    pub fn keep_behind_icons(&self) -> io::Result<()> {
-        if self.layer.above == HWND_BOTTOM {
-            return Ok(());
-        }
+    pub fn show_behind_icons(&self) -> bool {
+        let surface_layer = if self.layer.above == HWND_BOTTOM {
+            self.layer.parent
+        } else {
+            self.window
+        };
+        let safe = self.is_attached() && follows(self.layer.icon_anchor, surface_layer);
         unsafe {
-            let mut sibling = GetWindow(self.layer.above, GW_HWNDNEXT);
-            while !sibling.is_null() {
-                if sibling == self.window {
-                    return Ok(());
-                }
-                sibling = GetWindow(sibling, GW_HWNDNEXT);
-            }
-            if SetWindowPos(
-                self.window,
-                self.layer.above,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-            ) == 0
-            {
-                return Err(io::Error::last_os_error());
+            let shown = GetWindowLongPtrW(self.window, GWL_STYLE) as u32 & WS_VISIBLE != 0;
+            if shown != safe {
+                ShowWindow(self.window, if safe { SW_SHOWNOACTIVATE } else { SW_HIDE });
             }
         }
-        Ok(())
+        safe
+    }
+
+    pub fn renderer(&self, width: u32, height: u32) -> Result<(Renderer<'static>, Composition)> {
+        Composition::renderer(self.window, width, height)
     }
 
     pub fn is_attached(&self) -> bool {
         unsafe { IsWindow(self.window) != 0 && GetParent(self.window) == self.layer.parent }
+    }
+}
+
+fn follows(anchor: HWND, candidate: HWND) -> bool {
+    let mut sibling = unsafe { GetWindow(anchor, GW_HWNDNEXT) };
+    while !sibling.is_null() {
+        if sibling == candidate {
+            return true;
+        }
+        sibling = unsafe { GetWindow(sibling, GW_HWNDNEXT) };
+    }
+    false
+}
+
+pub struct Composition {
+    device: IDCompositionDevice,
+    _target: IDCompositionTarget,
+}
+
+impl Composition {
+    fn renderer(window: HWND, width: u32, height: u32) -> Result<(Renderer<'static>, Self)> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::DX12,
+            ..Default::default()
+        });
+        // Use a composition swap chain. It has no HWND to promote to fullscreen
+        // and DWM clips the visual to our disabled child window.
+        unsafe {
+            let device: IDCompositionDevice = DCompositionCreateDevice(None::<&IDXGIDevice>)?;
+            let target = device.CreateTargetForHwnd(CompositionHwnd(window), false)?;
+            let visual = device.CreateVisual()?;
+            target.SetRoot(&visual)?;
+            // wgpu takes its own reference to the visual.
+            let surface = instance.create_surface_unsafe(
+                wgpu::SurfaceTargetUnsafe::CompositionVisual(visual.as_raw()),
+            )?;
+            let renderer =
+                pollster::block_on(Renderer::from_surface(&instance, surface, width, height))?;
+            device.Commit()?;
+            Ok((
+                renderer,
+                Self {
+                    device,
+                    _target: target,
+                },
+            ))
+        }
+    }
+
+    pub fn commit(&self) -> Result<()> {
+        unsafe { self.device.Commit()? };
+        Ok(())
     }
 }
 
@@ -295,7 +353,7 @@ pub fn on_battery() -> bool {
     }
 }
 
-fn wallpaper_layer() -> io::Result<(HWND, HWND)> {
+fn wallpaper_layer() -> io::Result<DesktopLayer> {
     unsafe {
         let progman = FindWindowW(PROGMAN, ptr::null());
         if progman.is_null() {
@@ -334,20 +392,28 @@ fn wallpaper_layer() -> io::Result<(HWND, HWND)> {
                         && GetWindowRect(sibling, &mut worker) != 0
                         && covers(worker, shell)
                     {
-                        return Ok((sibling, HWND_BOTTOM));
+                        return Ok(DesktopLayer {
+                            parent: sibling,
+                            above: HWND_BOTTOM,
+                            icon_anchor: icons,
+                        });
                     }
                 }
                 sibling = GetWindow(sibling, GW_HWNDNEXT);
             }
-            return Ok((progman, icons));
+            return Ok(DesktopLayer {
+                parent: progman,
+                above: icons,
+                icon_anchor: icons,
+            });
         }
 
-        let mut worker: HWND = ptr::null_mut();
-        EnumWindows(Some(find_worker), (&mut worker as *mut HWND) as LPARAM);
-        if worker.is_null() {
-            return Err(io::Error::other("Explorer's wallpaper layer was not found"));
-        }
-        Ok((worker, HWND_BOTTOM))
+        let mut layer = None;
+        EnumWindows(
+            Some(find_worker),
+            (&mut layer as *mut Option<DesktopLayer>) as LPARAM,
+        );
+        layer.ok_or_else(|| io::Error::other("Explorer's wallpaper layer was not found"))
     }
 }
 
@@ -356,7 +422,11 @@ unsafe extern "system" fn find_worker(hwnd: HWND, context: LPARAM) -> i32 {
         if !child(hwnd, ICONS).is_null() {
             let worker = FindWindowExW(ptr::null_mut(), hwnd, WORKER, ptr::null());
             if !worker.is_null() && child(worker, ICONS).is_null() {
-                *(context as *mut HWND) = worker;
+                *(context as *mut Option<DesktopLayer>) = Some(DesktopLayer {
+                    parent: worker,
+                    above: HWND_BOTTOM,
+                    icon_anchor: hwnd,
+                });
                 return 0;
             }
         }
@@ -381,6 +451,42 @@ unsafe fn set_style(window: HWND, index: i32, style: isize) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a Windows session with a DirectX 12 GPU"]
+    fn composition_presents_to_a_hidden_window() -> Result<()> {
+        struct HiddenWindow(HWND);
+        impl Drop for HiddenWindow {
+            fn drop(&mut self) {
+                unsafe { DestroyWindow(self.0) };
+            }
+        }
+        // A private hidden window exercises the compositor without changing Explorer
+        // or taking focus from the user's desktop.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE,
+                w!("STATIC"),
+                w!("Stilltide composition test"),
+                WS_POPUP | WS_DISABLED,
+                0,
+                0,
+                64,
+                64,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            return Err(io::Error::last_os_error().into());
+        }
+        let window = HiddenWindow(hwnd);
+        let (mut renderer, _composition) = Composition::renderer(window.0, 64, 64)?;
+        assert!(renderer.render(64, 64, 0.0)?);
+        Ok(())
+    }
 
     #[test]
     fn a_window_must_cover_the_entire_monitor() {

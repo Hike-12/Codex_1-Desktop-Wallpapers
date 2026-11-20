@@ -1,6 +1,8 @@
-# Desktop Wallpapers
+# Stilltide
 
-Desktop Wallpapers (`wallp`) is a Rust and wgpu live wallpaper engine for Windows, macOS, and Linux. It renders WGSL scenes and looping videos and still images on native desktop surfaces and pauses each display when the desktop backend detects fullscreen coverage.
+![Stilltide logo](branding/stilltide.png)
+
+Stilltide (`wallp`) is a Rust and wgpu live wallpaper engine for Windows, macOS, and Linux. It renders WGSL scenes and looping videos and still images on native desktop surfaces and pauses each display when the desktop backend detects fullscreen coverage.
 
 ## Get started
 
@@ -27,7 +29,7 @@ Unpack the executable and run `./wallp`. The built-in collection is installed au
 
 ## Wallpaper collection
 
-[![Preview of all 15 Desktop Wallpapers scenes](wallpapers/preview.jpg)](wallpapers/preview.jpg)
+[![Preview of all 15 Stilltide scenes](wallpapers/preview.jpg)](wallpapers/preview.jpg)
 
 ### Interactive collection
 

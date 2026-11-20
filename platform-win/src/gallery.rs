@@ -9,7 +9,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 
 use crate::ipc::{self, Control, State};
 
-const TITLE: &str = "Wallpaper Gallery";
+const TITLE: &str = "Stilltide";
 const INK: Color32 = Color32::from_rgb(240, 244, 248);
 const MUTED: Color32 = Color32::from_rgb(136, 148, 163);
 const PANEL: Color32 = Color32::from_rgb(18, 20, 26);
@@ -23,16 +23,18 @@ const GAP: f32 = 14.0;
 
 pub fn run() -> Result<()> {
     let root = library::folder()?;
+    let icon = eframe::icon_data::from_png_bytes(crate::BRAND_ICON)?;
     eframe::run_native(
         TITLE,
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
+                .with_icon(icon.clone())
                 .with_inner_size([1040.0, 740.0])
                 .with_min_inner_size([360.0, 440.0])
                 .with_drag_and_drop(true),
             ..Default::default()
         },
-        Box::new(|creation| {
+        Box::new(move |creation| {
             let ctx = &creation.egui_ctx;
             let mut visuals = egui::Visuals::dark();
             visuals.override_text_color = Some(INK);
@@ -56,6 +58,14 @@ pub fn run() -> Result<()> {
             visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
             ctx.set_visuals(visuals);
             let mut gallery = Gallery {
+                logo: ctx.load_texture(
+                    "Stilltide logo",
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [icon.width as usize, icon.height as usize],
+                        &icon.rgba,
+                    ),
+                    egui::TextureOptions::LINEAR,
+                ),
                 root,
                 cards: Vec::new(),
                 delete_prompt: None,
@@ -91,6 +101,7 @@ struct Update {
 }
 
 struct Gallery {
+    logo: egui::TextureHandle,
     root: PathBuf,
     cards: Vec<Card>,
     delete_prompt: Option<(String, PathBuf)>,
@@ -264,12 +275,8 @@ impl eframe::App for Gallery {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Wallpaper Gallery")
-                                    .size(30.0)
-                                    .strong()
-                                    .color(INK),
-                            );
+                            ui.image((self.logo.id(), Vec2::splat(36.0)));
+                            ui.label(RichText::new(TITLE).size(30.0).strong().color(INK));
                             if self.cards.iter().any(|c| {
                                 self.state.as_ref().and_then(|s| s.active.as_ref()) == Some(&c.path)
                             }) {

@@ -1,6 +1,6 @@
-# Desktop Wallpapers architecture
+# Stilltide architecture
 
-Desktop Wallpapers (`wallp`) is a Rust program that draws to the desktop background of a logged-in session. The native backend puts a surface where desktop icons and ordinary windows can appear above it. The shared renderer takes that surface and paints a WGSL scene, a still image, or a looping video. Each output can pause independently, while expensive inputs such as video decoding and audio capture are shared across outputs.
+Stilltide (`wallp`) is a Rust program that draws to the desktop background of a logged-in session. The native backend puts a surface where desktop icons and ordinary windows can appear above it. The shared renderer takes that surface and paints a WGSL scene, a still image, or a looping video. Each output can pause independently, while expensive inputs such as video decoding and audio capture are shared across outputs.
 
 This guide describes the engine and its interactive wallpaper packs. The [README](README.md) covers installation, command syntax, and pack examples. The verification table records what shipped in v0.1.0.
 
@@ -57,9 +57,9 @@ Windows, macOS, and X11 use winit to create windows and dispatch events. Wayland
 
 ### Windows and Explorer
 
-The backend finds `Progman`, asks Explorer for a wallpaper layer using the undocumented `0x052C` message, and looks for the icon view `SHELLDLL_DefView`. On a raised desktop it attaches the wallpaper as a child of `Progman` below the icon view. On the other supported hierarchy it attaches to the separate `WorkerW` behind the icon host. It converts monitor coordinates from screen space to the parent window's client space before positioning each child.
+The backend finds `Progman`, asks Explorer for a wallpaper layer using the undocumented `0x052C` message, and looks for the icon view `SHELLDLL_DefView`. It prefers a `WorkerW` behind the icon host. On raised desktops without a usable `WorkerW`, it places the wallpaper directly below the icon view in `Progman`. It converts monitor coordinates to the parent window's client space.
 
-winit owns the wallpaper HWND. Explorer owns the handles the backend uses for parenting and stacking. The wallpaper uses a child style and extended styles for non-activation, transparent behavior, and tool-window treatment. The raised desktop path also uses a layered window. The next desktop check detects a lost attachment and exits with an error. Restarting the program discovers Explorer's hierarchy again.
+winit owns the disabled child HWND. Explorer owns the parent and icon host. The Windows backend supplies wgpu with a DirectComposition visual and uses the event loop's frame timer to present it, even if Explorer suppresses window repaint events. Before showing or drawing the wallpaper, the backend checks that its layer still follows the icon host in the window stack. It hides the child if Explorer moves the layer out of order. A lost attachment exits with an error so a restart can discover the current hierarchy.
 
 Coverage starts with the foreground window. On multiple displays, the backend can also check other visible top-level windows for monitors the foreground window leaves uncovered. It excludes shell and wallpaper windows, minimized and DWM-cloaked windows, and its own process. It prefers DWM's extended frame bounds, with the Win32 window rectangle as a fallback. Coverage is a geometric heuristic for fullscreen and borderless windows. [Explorer attachment and coverage](platform-win/src/desktop.rs)
 

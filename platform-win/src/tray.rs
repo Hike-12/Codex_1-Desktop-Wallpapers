@@ -33,7 +33,7 @@ impl Tray {
     pub fn new(folder: PathBuf) -> Result<Self> {
         let (menu, selections) = build_menu(installed_packs(&folder)?)?;
         let icon = TrayIconBuilder::new()
-            .with_tooltip("Desktop Wallpapers")
+            .with_tooltip("Stilltide")
             .with_icon(wallpaper_icon()?)
             .with_menu(Box::new(menu))
             .build()?;
@@ -107,42 +107,15 @@ pub fn show_error(message: &str) {
         MessageBoxW(
             std::ptr::null_mut(),
             message.as_ptr(),
-            w!("Desktop Wallpapers"),
+            w!("Stilltide"),
             MB_OK | MB_ICONERROR,
         );
     }
 }
 
 fn wallpaper_icon() -> Result<Icon> {
-    const PIXELS: [&[u8; 16]; 16] = [
-        b"................",
-        b".##############.",
-        b".#oooooooooooo#.",
-        b".#oooooooooooo#.",
-        b".#ooooo++ooooo#.",
-        b".#oooo+oo+oooo#.",
-        b".#o+++oooo++++#.",
-        b".#oooooooooooo#.",
-        b".#oooooooooooo#.",
-        b".##############.",
-        b"......####......",
-        b"......####......",
-        b"....########....",
-        b"................",
-        b"................",
-        b"................",
-    ];
-    let rgba = PIXELS
-        .into_iter()
-        .flatten()
-        .flat_map(|&pixel| match pixel {
-            b'#' => [217, 239, 246, 255],
-            b'o' => [17, 31, 45, 255],
-            b'+' => [65, 214, 191, 255],
-            _ => [0, 0, 0, 0],
-        })
-        .collect();
-    Ok(Icon::from_rgba(rgba, 16, 16)?)
+    let image = eframe::icon_data::from_png_bytes(crate::BRAND_ICON)?;
+    Ok(Icon::from_rgba(image.rgba, image.width, image.height)?)
 }
 
 #[cfg(test)]
