@@ -4,9 +4,10 @@ use windows_sys::{
     Win32::{
         Foundation::{GetLastError, HWND, LPARAM, POINT, RECT, SetLastError},
         Graphics::{
-            Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
+            Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
             Gdi::ScreenToClient,
         },
+        System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
         UI::WindowsAndMessaging::*,
     },
     core::PCWSTR,
@@ -23,17 +24,28 @@ const ICONS: PCWSTR = w!("SHELLDLL_DefView");
 
 pub struct Desktop {
     window: HWND,
+    layer: DesktopLayer,
+}
+
+#[derive(Clone, Copy)]
+pub struct DesktopLayer {
     parent: HWND,
     above: HWND,
 }
 
+impl DesktopLayer {
+    pub fn find() -> io::Result<Self> {
+        let (parent, above) = wallpaper_layer()?;
+        Ok(Self { parent, above })
+    }
+}
+
 impl Desktop {
-    pub fn attach(window: &Window) -> core_engine::Result<Self> {
+    pub fn attach(window: &Window, layer: DesktopLayer, bounds: RECT) -> core_engine::Result<Self> {
         let RawWindowHandle::Win32(handle) = window.window_handle()?.as_raw() else {
             return Err("Expected a Win32 window".into());
         };
         let window = handle.hwnd.get() as HWND;
-        let (parent, above) = wallpaper_layer()?;
         // The HWND belongs to winit. Explorer's window handles are borrowed for
         // the lifetime of this attachment and must never be destroyed by us.
         unsafe {
@@ -45,7 +57,7 @@ impl Desktop {
             )?;
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
             let mut flags = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW;
-            if above != HWND_BOTTOM {
+            if layer.above != HWND_BOTTOM {
                 flags |= WS_EX_LAYERED;
             }
             set_style(
@@ -53,20 +65,18 @@ impl Desktop {
                 GWL_EXSTYLE,
                 (style & !(WS_EX_APPWINDOW as isize)) | flags as isize,
             )?;
-            if above != HWND_BOTTOM && SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA) == 0 {
+            if layer.above != HWND_BOTTOM
+                && SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA) == 0
+            {
                 return Err(io::Error::last_os_error().into());
             }
             SetLastError(0);
-            if SetParent(window, parent).is_null() && GetLastError() != 0 {
+            if SetParent(window, layer.parent).is_null() && GetLastError() != 0 {
                 return Err(io::Error::last_os_error().into());
             }
         }
-        let desktop = Self {
-            window,
-            parent,
-            above,
-        };
-        desktop.fit(primary_bounds())?;
+        let desktop = Self { window, layer };
+        desktop.fit(bounds)?;
         Ok(desktop)
     }
 
@@ -76,10 +86,10 @@ impl Desktop {
             y: bounds.top,
         };
         unsafe {
-            if ScreenToClient(self.parent, &mut origin) == 0
+            if ScreenToClient(self.layer.parent, &mut origin) == 0
                 || SetWindowPos(
                     self.window,
-                    self.above,
+                    self.layer.above,
                     origin.x,
                     origin.y,
                     bounds.right - bounds.left,
@@ -94,47 +104,113 @@ impl Desktop {
     }
 
     pub fn is_attached(&self) -> bool {
-        unsafe { IsWindow(self.window) != 0 && GetParent(self.window) == self.parent }
-    }
-
-    pub fn covered(&self, monitor: RECT) -> bool {
-        unsafe {
-            let foreground = GetForegroundWindow();
-            if foreground.is_null()
-                || foreground == self.window
-                || foreground == GetDesktopWindow()
-                || foreground == GetShellWindow()
-                || !child(foreground, ICONS).is_null()
-                || IsIconic(foreground) != 0
-            {
-                return false;
-            }
-            let mut bounds = RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            };
-            let status = DwmGetWindowAttribute(
-                foreground,
-                DWMWA_EXTENDED_FRAME_BOUNDS as u32,
-                (&mut bounds as *mut RECT).cast(),
-                std::mem::size_of::<RECT>() as u32,
-            );
-            (status >= 0 || GetWindowRect(foreground, &mut bounds) != 0) && covers(bounds, monitor)
-        }
+        unsafe { IsWindow(self.window) != 0 && GetParent(self.window) == self.layer.parent }
     }
 }
 
-pub fn primary_bounds() -> RECT {
-    unsafe {
-        RECT {
-            left: 0,
-            top: 0,
-            right: GetSystemMetrics(SM_CXSCREEN),
-            bottom: GetSystemMetrics(SM_CYSCREEN),
+pub fn covered_displays(monitors: &[RECT]) -> Vec<bool> {
+    let foreground = unsafe { GetForegroundWindow() };
+    let bounds = visible_bounds(foreground);
+    let mut covered: Vec<_> = monitors
+        .iter()
+        .map(|&monitor| bounds.is_some_and(|window| covers(window, monitor)))
+        .collect();
+    // A borderless fullscreen window can stay visible on a secondary display
+    // after an application on another monitor becomes the foreground window.
+    if monitors.len() > 1 && covered.contains(&false) {
+        let mut check = CoverageCheck {
+            monitors,
+            covered: &mut covered,
+            foreground,
+        };
+        unsafe {
+            EnumWindows(
+                Some(check_window),
+                (&mut check as *mut CoverageCheck<'_>) as LPARAM,
+            )
+        };
+    }
+    covered
+}
+
+struct CoverageCheck<'a> {
+    monitors: &'a [RECT],
+    covered: &'a mut [bool],
+    foreground: HWND,
+}
+
+unsafe extern "system" fn check_window(window: HWND, context: LPARAM) -> i32 {
+    let check = unsafe { &mut *(context as *mut CoverageCheck<'_>) };
+    if window == check.foreground {
+        return 1;
+    }
+    let style = unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) } as u32;
+    let mut frame: RECT = unsafe { std::mem::zeroed() };
+    if style & (WS_EX_TRANSPARENT | WS_EX_LAYERED) != 0
+        || unsafe { GetWindowRect(window, &mut frame) } == 0
+        || !check
+            .monitors
+            .iter()
+            .zip(check.covered.iter())
+            .any(|(&monitor, &covered)| !covered && covers(frame, monitor))
+    {
+        return 1;
+    }
+    if let Some(bounds) = visible_bounds(window) {
+        for (&monitor, covered) in check.monitors.iter().zip(check.covered.iter_mut()) {
+            *covered |= covers(bounds, monitor);
         }
     }
+    i32::from(check.covered.contains(&false))
+}
+
+fn visible_bounds(window: HWND) -> Option<RECT> {
+    let mut process = 0;
+    let mut cloaked = 0u32;
+    unsafe {
+        if window.is_null()
+            || IsWindowVisible(window) == 0
+            || IsIconic(window) != 0
+            || window == GetDesktopWindow()
+            || window == GetShellWindow()
+            || !child(window, ICONS).is_null()
+            || is_wallpaper_layer(window)
+        {
+            return None;
+        }
+        GetWindowThreadProcessId(window, &mut process);
+        if process == std::process::id() {
+            return None;
+        }
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_CLOAKED as u32,
+            (&mut cloaked as *mut u32).cast(),
+            size_of::<u32>() as u32,
+        );
+        if cloaked != 0 {
+            return None;
+        }
+        let mut bounds: RECT = std::mem::zeroed();
+        let status = DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            (&mut bounds as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        );
+        (status >= 0 || GetWindowRect(window, &mut bounds) != 0).then_some(bounds)
+    }
+}
+
+fn is_wallpaper_layer(window: HWND) -> bool {
+    let mut name = [0u16; 9];
+    let length = unsafe { GetClassNameW(window, name.as_mut_ptr(), name.len() as i32) };
+    ["Progman", "WorkerW"].iter().any(|class| {
+        name[..length as usize]
+            .iter()
+            .copied()
+            .eq(class.encode_utf16())
+    })
 }
 
 fn covers(window: RECT, monitor: RECT) -> bool {
@@ -142,6 +218,35 @@ fn covers(window: RECT, monitor: RECT) -> bool {
         && window.top <= monitor.top
         && window.right >= monitor.right
         && window.bottom >= monitor.bottom
+}
+
+pub fn cursor_in(monitor: RECT) -> Option<[f32; 2]> {
+    let mut position = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut position) } == 0 {
+        return None;
+    }
+    normalize_cursor(position, monitor)
+}
+
+fn normalize_cursor(position: POINT, monitor: RECT) -> Option<[f32; 2]> {
+    if position.x < monitor.left
+        || position.x >= monitor.right
+        || position.y < monitor.top
+        || position.y >= monitor.bottom
+    {
+        return None;
+    }
+    Some([
+        (position.x - monitor.left) as f32 / (monitor.right - monitor.left) as f32,
+        (position.y - monitor.top) as f32 / (monitor.bottom - monitor.top) as f32,
+    ])
+}
+
+pub fn on_battery() -> bool {
+    let mut status = std::mem::MaybeUninit::<SYSTEM_POWER_STATUS>::uninit();
+    unsafe {
+        GetSystemPowerStatus(status.as_mut_ptr()) != 0 && status.assume_init().ACLineStatus == 0
+    }
 }
 
 fn wallpaper_layer() -> io::Result<(HWND, HWND)> {
@@ -232,5 +337,20 @@ mod tests {
             },
             monitor
         ));
+    }
+
+    #[test]
+    fn cursor_uses_monitor_relative_coordinates_and_excludes_neighbor() {
+        let monitor = RECT {
+            left: -1920,
+            top: 120,
+            right: 0,
+            bottom: 1200,
+        };
+        assert_eq!(
+            normalize_cursor(POINT { x: -960, y: 660 }, monitor),
+            Some([0.5, 0.5])
+        );
+        assert_eq!(normalize_cursor(POINT { x: 0, y: 660 }, monitor), None);
     }
 }

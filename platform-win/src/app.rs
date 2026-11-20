@@ -5,7 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use core_engine::{DEFAULT_SHADER, Renderer, Result, shader::ShaderFile};
+use core_engine::{
+    DEFAULT_SHADER, FrameInputs, Renderer, Result,
+    shader::{ShaderFile, set_shader_all},
+};
 use tokio::sync::oneshot;
 use tray_icon::menu::MenuEvent;
 use windows_sys::Win32::Foundation::RECT;
@@ -13,11 +16,13 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop},
+    platform::windows::MonitorHandleExtWindows,
     window::{Window, WindowId},
 };
 
 use crate::{
-    desktop::{Desktop, primary_bounds},
+    audio::PlaybackAudio,
+    desktop::{self, Desktop, DesktopLayer},
     ipc,
     tray::{self, Action, Tray},
 };
@@ -26,24 +31,12 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const DESKTOP_INTERVAL: Duration = Duration::from_millis(250);
 const SHADER_INTERVAL: Duration = Duration::from_millis(500);
 
-const USAGE: &str =
-    "Usage: wallp [shader.wgsl | pack-folder]\n       wallp set <shader.wgsl | pack-folder>";
+const USAGE: &str = "Usage: wallp [--audio] [--battery-saver] [shader.wgsl | pack-folder]\n       wallp set <shader.wgsl | pack-folder>";
 
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
-    let shader = args.next();
-    if matches!(
-        shader.as_deref().and_then(OsStr::to_str),
-        Some("--help" | "-h")
-    ) {
-        println!(
-            "{USAGE}\n\nRun on the primary display. Use the system tray or 'wallp set' to switch while running.\n\
-             Packs in %APPDATA%\\wallp\\wallpapers appear in the tray. Each needs a manifest.toml\n\
-             with a name and a relative shader path, for example shader = \"shader.wgsl\"."
-        );
-        return Ok(());
-    }
-    if shader.as_deref() == Some(OsStr::new("set")) {
+    let first = args.next();
+    if first.as_deref() == Some(OsStr::new("set")) {
         let path = args.next().ok_or(USAGE)?;
         if args.next().is_some() {
             return Err(USAGE.into());
@@ -52,8 +45,36 @@ pub fn run() -> Result<()> {
         println!("Wallpaper updated.");
         return Ok(());
     }
-    if args.next().is_some() {
-        return Err(USAGE.into());
+    let mut shader = None;
+    let mut battery_saver = false;
+    let mut audio = false;
+    let mut parsing_options = true;
+    for argument in first.into_iter().chain(args) {
+        let option = if parsing_options {
+            argument.to_str()
+        } else {
+            None
+        };
+        match option {
+            Some("--help" | "-h") => {
+                println!(
+                    "{USAGE}\n\nRun on desktop displays. Use the system tray or 'wallp set' to switch while running.\n\
+                     --audio reads system playback audio for the shader.\n\
+                     --battery-saver pauses wallpapers while running on battery.\n\
+                     Packs in %APPDATA%\\wallp\\wallpapers appear in the tray. Each needs a manifest.toml\n\
+                     with a name and a relative shader path, for example shader = \"shader.wgsl\"."
+                );
+                return Ok(());
+            }
+            Some("--audio") => audio = true,
+            Some("--battery-saver") => battery_saver = true,
+            Some("--") => parsing_options = false,
+            Some(flag) if flag.starts_with('-') => {
+                return Err(format!("Unknown option {flag}\n{USAGE}").into());
+            }
+            _ if shader.is_none() => shader = Some(PathBuf::from(argument)),
+            _ => return Err(USAGE.into()),
+        }
     }
     let event_loop = EventLoop::<Event>::with_user_event().build()?;
     ipc::listen(event_loop.create_proxy())?;
@@ -63,7 +84,9 @@ pub fn run() -> Result<()> {
     }));
     let mut app = App {
         running: None,
-        shader: shader.map(PathBuf::from),
+        shader,
+        audio,
+        battery_saver,
         error: None,
         tray: None,
     };
@@ -80,8 +103,10 @@ pub enum Event {
 }
 
 struct App {
-    running: Option<Wallpaper>,
+    running: Option<Wallpapers>,
     shader: Option<PathBuf>,
+    audio: bool,
+    battery_saver: bool,
     error: Option<Box<dyn std::error::Error>>,
     tray: Option<Tray>,
 }
@@ -112,7 +137,12 @@ impl ApplicationHandler<Event> for App {
             return;
         }
         event_loop.listen_device_events(DeviceEvents::Never);
-        match Wallpaper::new(event_loop, self.shader.take()) {
+        match Wallpapers::new(
+            event_loop,
+            self.shader.take(),
+            self.audio,
+            self.battery_saver,
+        ) {
             Ok(wallpaper) => {
                 self.running = Some(wallpaper);
                 match Tray::new() {
@@ -152,25 +182,25 @@ impl ApplicationHandler<Event> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(wallpaper) = self
-            .running
-            .as_mut()
-            .filter(|state| state.window.id() == id)
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let Some(wallpaper) = running
+            .surfaces
+            .iter_mut()
+            .find(|wallpaper| wallpaper.window.id() == id)
         else {
             return;
         };
         match event {
-            WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
-            WindowEvent::RedrawRequested if !wallpaper.paused => {
-                let size = wallpaper.window.inner_size();
-                let time = (wallpaper.started.elapsed() - wallpaper.paused_duration).as_secs_f32();
-                match wallpaper.renderer.render(size.width, size.height, time) {
-                    Ok(true) if !wallpaper.presented => {
-                        wallpaper.presented = true;
-                        eprintln!("wallp: wallpaper is rendering");
-                    }
-                    Ok(_) => {}
-                    Err(error) => self.fail(event_loop, error),
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::RedrawRequested if wallpaper.paused_at.is_none() => {
+                let audio_bands = running
+                    .audio
+                    .as_ref()
+                    .map_or([0.0; 16], PlaybackAudio::bands);
+                if let Err(error) = wallpaper.draw(audio_bands) {
+                    self.fail(event_loop, error);
                 }
             }
             _ => {}
@@ -179,7 +209,7 @@ impl ApplicationHandler<Event> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(wallpaper) = &mut self.running {
-            match wallpaper.update() {
+            match wallpaper.update(event_loop) {
                 Ok(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
                 Err(error) => self.fail(event_loop, error),
             }
@@ -191,24 +221,214 @@ impl ApplicationHandler<Event> for App {
     }
 }
 
+struct Wallpapers {
+    surfaces: Vec<Wallpaper>,
+    layer: DesktopLayer,
+    shader: Option<ShaderFile>,
+    audio: Option<PlaybackAudio>,
+    battery_saver: bool,
+    next_desktop_check: Instant,
+    next_shader_check: Instant,
+}
+
+impl Wallpapers {
+    fn new(
+        event_loop: &ActiveEventLoop,
+        shader: Option<PathBuf>,
+        audio: bool,
+        battery_saver: bool,
+    ) -> Result<Self> {
+        let shader = shader.and_then(|path| match ShaderFile::resolve(path) {
+            Ok(shader) => Some(shader),
+            Err(error) => {
+                eprintln!("wallp: {error}");
+                None
+            }
+        });
+        let audio = if audio {
+            match PlaybackAudio::new() {
+                Ok(audio) => Some(audio),
+                Err(error) => {
+                    eprintln!("wallp: could not start playback audio: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let now = Instant::now();
+        let mut wallpapers = Self {
+            surfaces: Vec::new(),
+            layer: DesktopLayer::find()?,
+            shader,
+            audio,
+            battery_saver,
+            next_desktop_check: now,
+            next_shader_check: now,
+        };
+        wallpapers.refresh_desktop(event_loop, now)?;
+        Ok(wallpapers)
+    }
+
+    fn select_shader(&mut self, path: PathBuf) -> Result<()> {
+        if self.surfaces.is_empty() {
+            return Err("No desktop display is available".into());
+        }
+        let mut renderers = self
+            .surfaces
+            .iter_mut()
+            .map(|wallpaper| &mut wallpaper.renderer)
+            .collect::<Vec<_>>();
+        let shader = ShaderFile::resolve(path)?.select_all(&mut renderers)?;
+        self.shader = Some(shader);
+        self.next_shader_check = Instant::now() + SHADER_INTERVAL;
+        Ok(())
+    }
+
+    fn select_builtin(&mut self) -> Result<()> {
+        if self.shader.is_some() {
+            let mut renderers = self
+                .surfaces
+                .iter_mut()
+                .map(|wallpaper| &mut wallpaper.renderer)
+                .collect::<Vec<_>>();
+            set_shader_all(DEFAULT_SHADER, &mut renderers)?;
+            self.shader = None;
+            eprintln!("wallp: loaded the built-in wallpaper");
+        }
+        Ok(())
+    }
+
+    fn refresh_desktop(&mut self, event_loop: &ActiveEventLoop, now: Instant) -> Result<()> {
+        let monitors: Vec<_> = event_loop
+            .available_monitors()
+            .filter_map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                (size.width > 0 && size.height > 0).then_some((
+                    monitor.hmonitor(),
+                    RECT {
+                        left: position.x,
+                        top: position.y,
+                        right: position.x + size.width as i32,
+                        bottom: position.y + size.height as i32,
+                    },
+                ))
+            })
+            .collect();
+        self.surfaces
+            .retain(|wallpaper| monitors.iter().any(|(id, _)| *id == wallpaper.monitor));
+        let on_battery = self.battery_saver && desktop::on_battery();
+        let covered = if on_battery {
+            vec![false; monitors.len()]
+        } else {
+            desktop::covered_displays(
+                &monitors
+                    .iter()
+                    .map(|(_, bounds)| *bounds)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for ((id, bounds), fullscreen) in monitors.into_iter().zip(covered) {
+            let wallpaper = if let Some(index) = self
+                .surfaces
+                .iter()
+                .position(|wallpaper| wallpaper.monitor == id)
+            {
+                &mut self.surfaces[index]
+            } else {
+                let mut wallpaper = Wallpaper::new(event_loop, self.layer, id, bounds)?;
+                if let Some(shader) = &self.shader {
+                    shader.apply_to(&mut wallpaper.renderer)?;
+                }
+                self.surfaces.push(wallpaper);
+                self.surfaces.last_mut().expect("wallpaper was just added")
+            };
+            if !wallpaper.desktop.is_attached() {
+                return Err("Explorer's wallpaper window was closed".into());
+            }
+            if bounds_key(wallpaper.bounds) != bounds_key(bounds) {
+                wallpaper.desktop.fit(bounds)?;
+                wallpaper.bounds = bounds;
+            }
+            let reason = if on_battery {
+                Some("battery saver")
+            } else if fullscreen {
+                Some("fullscreen")
+            } else {
+                None
+            };
+            wallpaper.update_pause(reason, now);
+        }
+        if let Some(audio) = &self.audio {
+            audio.set_active(
+                self.surfaces
+                    .iter()
+                    .any(|wallpaper| wallpaper.paused_at.is_none()),
+            );
+        }
+        self.next_desktop_check = now + DESKTOP_INTERVAL;
+        Ok(())
+    }
+
+    fn update(&mut self, event_loop: &ActiveEventLoop) -> Result<Instant> {
+        let now = Instant::now();
+        if now >= self.next_desktop_check {
+            self.refresh_desktop(event_loop, now)?;
+        }
+        let mut deadline = self.next_desktop_check;
+        if let Some(shader) = &mut self.shader
+            && self
+                .surfaces
+                .iter()
+                .any(|wallpaper| wallpaper.paused_at.is_none())
+        {
+            if now >= self.next_shader_check {
+                self.next_shader_check = now + SHADER_INTERVAL;
+                let mut renderers = self
+                    .surfaces
+                    .iter_mut()
+                    .map(|wallpaper| &mut wallpaper.renderer)
+                    .collect::<Vec<_>>();
+                shader.reload_all(&mut renderers);
+            }
+            deadline = deadline.min(self.next_shader_check);
+        }
+        for wallpaper in self
+            .surfaces
+            .iter_mut()
+            .filter(|wallpaper| wallpaper.paused_at.is_none())
+        {
+            if now >= wallpaper.next_frame {
+                wallpaper.next_frame = now + FRAME_INTERVAL;
+                wallpaper.window.request_redraw();
+            }
+            deadline = deadline.min(wallpaper.next_frame);
+        }
+        Ok(deadline)
+    }
+}
+
 struct Wallpaper {
     renderer: Renderer<'static>,
     window: Arc<Window>,
     desktop: Desktop,
-    monitor: RECT,
+    monitor: isize,
+    bounds: RECT,
     started: Instant,
     next_frame: Instant,
-    next_desktop_check: Instant,
-    next_shader_check: Instant,
-    paused: bool,
-    paused_at: Instant,
+    paused_at: Option<Instant>,
     paused_duration: Duration,
     presented: bool,
-    shader: Option<ShaderFile>,
 }
 
 impl Wallpaper {
-    fn new(event_loop: &ActiveEventLoop, shader: Option<PathBuf>) -> Result<Self> {
+    fn new(
+        event_loop: &ActiveEventLoop,
+        layer: DesktopLayer,
+        monitor: isize,
+        bounds: RECT,
+    ) -> Result<Self> {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
@@ -218,95 +438,60 @@ impl Wallpaper {
                     .with_resizable(false),
             )?,
         );
-        let desktop = Desktop::attach(&window)?;
+        let desktop = Desktop::attach(&window, layer, bounds)?;
         let size = window.inner_size();
         let renderer = pollster::block_on(Renderer::new(window.clone(), size.width, size.height))?;
         let now = Instant::now();
-        let monitor = primary_bounds();
-        let paused = desktop.covered(monitor);
-        if paused {
-            eprintln!("wallp: paused for fullscreen");
-        }
-        let shader = shader.and_then(|path| match ShaderFile::resolve(path) {
-            Ok(shader) => Some(shader),
-            Err(error) => {
-                eprintln!("wallp: {error}");
-                None
-            }
-        });
         Ok(Self {
             renderer,
             window,
             desktop,
             monitor,
+            bounds,
             started: now,
             next_frame: now,
-            next_desktop_check: now,
-            next_shader_check: now,
-            paused,
-            paused_at: now,
+            paused_at: None,
             paused_duration: Duration::ZERO,
             presented: false,
-            shader,
         })
     }
 
-    fn select_shader(&mut self, path: PathBuf) -> Result<()> {
-        let shader = ShaderFile::resolve(path)?.select(&mut self.renderer)?;
-        self.shader = Some(shader);
-        self.next_shader_check = Instant::now() + SHADER_INTERVAL;
+    fn update_pause(&mut self, reason: Option<&str>, now: Instant) {
+        let now = now.max(self.started);
+        let (left, top, _, _) = bounds_key(self.bounds);
+        match (reason, self.paused_at) {
+            (Some(reason), None) => {
+                self.paused_at = Some(now);
+                eprintln!("wallp: paused for {reason} on display ({left}, {top})");
+            }
+            (None, Some(start)) => {
+                self.paused_at = None;
+                self.paused_duration += now - start;
+                eprintln!("wallp: resumed rendering on display ({left}, {top})");
+            }
+            _ => {}
+        }
+    }
+
+    fn draw(&mut self, audio_bands: [f32; 16]) -> Result<()> {
+        let size = self.window.inner_size();
+        let time = (self.started.elapsed() - self.paused_duration).as_secs_f32();
+        let inputs = FrameInputs {
+            cursor: desktop::cursor_in(self.bounds),
+            audio_bands,
+        };
+        if self
+            .renderer
+            .render_with_inputs(size.width, size.height, time, &inputs)?
+            && !self.presented
+        {
+            self.presented = true;
+            eprintln!("wallp: wallpaper is rendering");
+        }
         Ok(())
     }
+}
 
-    fn select_builtin(&mut self) -> Result<()> {
-        if self.shader.is_some() {
-            pollster::block_on(self.renderer.set_shader(DEFAULT_SHADER))?;
-            self.shader = None;
-            eprintln!("wallp: loaded the built-in wallpaper");
-        }
-        Ok(())
-    }
-
-    fn update(&mut self) -> Result<Instant> {
-        let now = Instant::now();
-        if now >= self.next_desktop_check {
-            self.next_desktop_check = now + DESKTOP_INTERVAL;
-            if !self.desktop.is_attached() {
-                return Err("Explorer's wallpaper window was closed".into());
-            }
-            let monitor = primary_bounds();
-            if (monitor.right, monitor.bottom) != (self.monitor.right, self.monitor.bottom) {
-                self.desktop.fit(monitor)?;
-                self.monitor = monitor;
-            }
-            let covered = self.desktop.covered(self.monitor);
-            if covered != self.paused {
-                self.paused = covered;
-                if covered {
-                    self.paused_at = now;
-                    eprintln!("wallp: paused for fullscreen");
-                } else {
-                    self.paused_duration += now - self.paused_at;
-                    eprintln!("wallp: resumed rendering");
-                }
-            }
-        }
-        if self.paused {
-            return Ok(self.next_desktop_check);
-        }
-
-        let mut deadline = self.next_desktop_check;
-        if let Some(shader) = &mut self.shader {
-            if now >= self.next_shader_check {
-                self.next_shader_check = now + SHADER_INTERVAL;
-                shader.reload(&mut self.renderer);
-            }
-            deadline = deadline.min(self.next_shader_check);
-        }
-        if now >= self.next_frame {
-            self.next_frame = now + FRAME_INTERVAL;
-            self.window.request_redraw();
-        }
-        Ok(deadline.min(self.next_frame))
-    }
+fn bounds_key(bounds: RECT) -> (i32, i32, i32, i32) {
+    (bounds.left, bounds.top, bounds.right, bounds.bottom)
 }

@@ -5,8 +5,15 @@ edition.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-engine.workspace = true
-objc2-app-kit = { version = "0.2", default-features = false, features = ["NSResponder", "NSScreen", "NSView", "NSWindow"] }
+core-foundation = "0.9"
+libloading = "0.8"
+objc2 = "0.5"
+objc2-app-kit = { version = "0.2", default-features = false, features = ["NSEvent", "NSGraphics", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGWindowLevel"] }
-objc2-foundation = { version = "0.2", default-features = false, features = ["NSArray", "NSThread"] }
+objc2-core-audio = { version = "0.3", default-features = false, features = ["AudioHardware", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFDictionary"] }
+objc2-foundation = { version = "0.2", default-features = false, features = ["NSArray", "NSDictionary", "NSGeometry", "NSString", "NSThread", "NSUUID", "NSValue"] }
 pollster = "0.4"
+rtrb = "0.3"
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
