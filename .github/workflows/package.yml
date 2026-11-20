@@ -1,0 +1,56 @@
+name: Package release
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.archive }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            archive: wallp-windows-x86_64.zip
+          - runner: ubuntu-24.04
+            archive: wallp-linux-x86_64.tar.gz
+          - runner: macos-15
+            archive: wallp-macos-arm64.tar.gz
+          - runner: macos-15-intel
+            archive: wallp-macos-x86_64.tar.gz
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse-dev libwayland-dev libxkbcommon-dev libx11-dev pkg-config
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build the release binary
+        run: cargo +stable build --locked --release --bin wallp
+      - name: Check and archive the Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & target/release/wallp.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -LiteralPath target/release/wallp.exe,README.md -DestinationPath '${{ matrix.archive }}'
+      - name: Check and archive the Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ./target/release/wallp --help
+          tar -czf '${{ matrix.archive }}' -C target/release wallp -C "$GITHUB_WORKSPACE" README.md
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          compression-level: 0
