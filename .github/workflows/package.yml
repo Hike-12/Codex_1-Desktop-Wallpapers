@@ -54,3 +54,19 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
           compression-level: 0
+  wallpapers:
+    name: wallp-wallpapers.zip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Archive the wallpaper collection
+        run: zip -q -r wallp-wallpapers.zip wallpapers README.md
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: wallp-wallpapers.zip
+          path: wallp-wallpapers.zip
+          if-no-files-found: error
+          compression-level: 0

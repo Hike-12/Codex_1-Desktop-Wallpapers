@@ -4,7 +4,7 @@ Desktop Wallpapers (`wallp`) is a Rust and wgpu live wallpaper engine for Window
 
 ## Get started
 
-Download the archive for your OS and CPU from the [latest release](https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/releases/latest). Extract it and run the executable from a terminal.
+Download the archive for your OS and CPU and the separate `wallp-wallpapers.zip` collection from the [latest release](https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/releases/latest). Extract both into the same folder and run the executable from a terminal. The collection includes 15 scenes, a preview gallery, and this README.
 
 | Platform | Package | Desktop requirements |
 | --- | --- | --- |
@@ -16,7 +16,11 @@ Running with no arguments uses the built-in WGSL scene. Pass a `.wgsl` file, an 
 
 On Windows, the system tray lists installed packs and can switch to the built-in wallpaper, refresh the list, or quit. With the app running, use `.\wallp.exe set <file-or-pack>` from another terminal to switch live. On macOS and Linux, choose a file or pack at launch. WGSL edits reload during playback on all three platforms.
 
-## Interactive collection
+## Wallpaper collection
+
+[![Preview of all 15 Desktop Wallpapers scenes](wallpapers/preview.jpg)](wallpapers/preview.jpg)
+
+### Interactive collection
 
 | Pack | What the icon layout changes |
 | --- | --- |
@@ -31,14 +35,32 @@ On Windows, the system tray lists installed packs and can switch to the built-in
 | [Moss Terrarium](wallpapers/moss-terrarium) | Moss and small leaves form connected gardens on damp slate |
 | [Rain on Glass](wallpapers/rain-on-glass) | Water bends around the icons and runs along channels between them |
 
-Build the current source to run these textured packs, then pass the pack folder to `wallp` or copy it into the Windows tray's wallpaper folder and refresh the list.
+### Ambient wallpapers
+
+| Pack | Animation |
+| --- | --- |
+| [Maple Drift](wallpapers/maple-drift) | Autumn leaves tumble at different depths, with a gust near the cursor |
+| [Lantern Snow](wallpapers/lantern-snow) | Snow drifts through an alpine village and picks up warm lantern light |
+| [Bioluminescent Bay](wallpapers/bioluminescent-bay) | Blue light follows breaking waves and gathers beneath the cursor |
+| [Cloud Sea](wallpapers/cloud-sea) | Cloud banks roll between mountain ridges in shifting dawn light |
+| [First Light Conservatory](wallpapers/first-light-conservatory) | Water beads run down glass while ferns sway and morning light shifts |
+
+Pass a pack folder to the v0.2.0 or newer executable. On Windows, you can also copy the individual pack folders into `%APPDATA%\wallp\wallpapers` and choose **Refresh wallpapers** in the tray.
+
+```text
+Windows  .\wallp.exe .\wallpapers\tidal-islands
+macOS    ./wallp ./wallpapers/maple-drift
+Linux    ./wallp ./wallpapers/lantern-snow
+```
+
+From a source checkout, run a pack with Cargo.
 
 ```sh
 cargo run --locked --bin wallp -- wallpapers/tidal-islands
 cargo run --locked --bin wallp -- wallpapers/midnight-wok
 ```
 
-Windows reads Explorer's icon positions. macOS and Linux use an animated demonstration layout. If Windows auto-arranges your icons, turn off **View → Auto arrange icons** in Explorer's desktop menu to place them freely. Both scenes render at the output resolution. Their included 3840×2160 JPEGs were upscaled from original generated artwork.
+Windows reads Explorer's icon positions for the interactive packs. macOS and Linux use an animated demonstration layout. If Windows auto-arranges your icons, turn off **View → Auto arrange icons** in Explorer's desktop menu to place them freely. Ambient scenes animate on each supported platform. Cursor effects use pointer input where the desktop provides it. All 15 scenes render at the output resolution and ship with 3840×2160 textures upscaled from original generated artwork.
 
 ## Wallpaper packs
 
