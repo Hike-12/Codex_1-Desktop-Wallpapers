@@ -10,7 +10,9 @@ Desktop Wallpapers (`wallp`) is a Rust and wgpu live wallpaper engine for Window
 2. Maple Drift starts on your desktop and the gallery opens with all 15 wallpapers. Click any card to apply it.
 3. Choose **+ Upload Video / Image** or drop a file onto the gallery to import and apply it. Supported formats are MP4, WebM, MKV, JPG, PNG, and WebP.
 
-Close the gallery to keep the wallpaper running. Open it again from **Open Gallery** in the system tray or by double-clicking **wallp.exe**. The gallery controls pause, audio reactivity, rendering FPS, and whether wallp starts when you sign in. Choose **Return to Windows wallpaper** in the gallery or tray to stop wallp and reveal your normal Windows wallpaper.
+Close the gallery to keep the wallpaper running. Open it again from **Open Gallery** in the system tray or by double-clicking **wallp.exe**. The gallery controls pause, audio reactivity, cursor effects, rendering FPS, and whether wallp starts when you sign in. Cursor effects are off by default. Wallpapers such as Tidal Islands still respond to desktop icon positions. Choose **Return to Windows wallpaper** in the gallery or tray to stop wallp and reveal your normal Windows wallpaper.
+
+Choose **Delete** on a gallery card and confirm to remove a wallpaper. If it was active, wallp switches to its fallback scene. Deleted packs are kept in `%APPDATA%\wallp\deleted-wallpapers`.
 
 Keep the executable somewhere permanent before enabling **Start with OS**. The ZIP is an alternate download and contains the same executable. Downloaded Windows builds are unsigned.
 

@@ -72,6 +72,8 @@ pub enum Control {
     OpenGallery,
     Pause(bool),
     Audio(bool),
+    CursorEffects(bool),
+    Delete(PathBuf),
     Fps(u8),
     Startup(bool),
     Quit,
@@ -82,6 +84,7 @@ pub struct State {
     pub active: Option<PathBuf>,
     pub paused: bool,
     pub audio: bool,
+    pub cursor_effects: bool,
     pub fps: u8,
     pub startup: bool,
 }

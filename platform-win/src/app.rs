@@ -125,6 +125,7 @@ pub fn run() -> Result<()> {
         running: None,
         shader,
         audio: audio || settings.audio,
+        cursor_effects: settings.cursor_effects,
         fps: settings.fps.clamp(15, 60),
         battery_saver,
         error: None,
@@ -153,6 +154,8 @@ pub enum Event {
 #[derive(Serialize, Deserialize)]
 struct Settings {
     audio: bool,
+    #[serde(default)]
+    cursor_effects: bool,
     fps: u8,
     selection: Option<PathBuf>,
 }
@@ -161,6 +164,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             audio: false,
+            cursor_effects: false,
             fps: 30,
             selection: None,
         }
@@ -171,6 +175,7 @@ struct App {
     running: Option<Wallpapers>,
     shader: Option<PathBuf>,
     audio: bool,
+    cursor_effects: bool,
     fps: u8,
     battery_saver: bool,
     error: Option<Box<dyn std::error::Error>>,
@@ -209,6 +214,7 @@ impl App {
         };
         let settings = Settings {
             audio: wallpaper.audio.is_some(),
+            cursor_effects: self.cursor_effects,
             fps: wallpaper.fps,
             // An empty path records the renderer's original built-in shader.
             selection: Some(wallpaper.selection.clone().unwrap_or_default()),
@@ -224,6 +230,9 @@ impl App {
     fn control(&mut self, control: Control) -> Result<State> {
         if matches!(control, Control::OpenGallery) {
             self.open_gallery()?;
+        }
+        if let Control::Delete(path) = &control {
+            self.delete_wallpaper(path)?;
         }
         let wallpaper = self.running.as_mut().ok_or("wallp is still starting")?;
         let mut persist = false;
@@ -248,12 +257,17 @@ impl App {
             }
             Control::Fps(_) => return Err("Choose 15, 30 or 60 FPS".into()),
             Control::Startup(value) => set_startup(value)?,
-            Control::Status | Control::OpenGallery | Control::Quit => {}
+            Control::CursorEffects(value) => {
+                self.cursor_effects = value;
+                persist = true;
+            }
+            Control::Status | Control::OpenGallery | Control::Delete(_) | Control::Quit => {}
         }
         let state = State {
             active: wallpaper.selection.clone(),
             paused: wallpaper.manual_pause,
             audio: wallpaper.audio.is_some(),
+            cursor_effects: self.cursor_effects,
             fps: wallpaper.fps,
             startup: startup(),
         };
@@ -261,6 +275,30 @@ impl App {
             self.save();
         }
         Ok(state)
+    }
+
+    fn delete_wallpaper(&mut self, path: &Path) -> Result<()> {
+        let root = self.folder.canonicalize()?;
+        let path = path.canonicalize()?;
+        if path.parent() != Some(root.as_path()) {
+            return Err("Choose a wallpaper installed in the gallery".into());
+        }
+        let wallpaper = self.running.as_mut().ok_or("wallp is still starting")?;
+        if wallpaper
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.starts_with(&path))
+        {
+            wallpaper.select_builtin()?;
+            self.save();
+        }
+        library::trash_pack(&root, &path)?;
+        if let Some(tray) = &mut self.tray
+            && let Err(error) = tray.refresh()
+        {
+            eprintln!("wallp: could not refresh the tray: {error}");
+        }
+        Ok(())
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: Box<dyn std::error::Error>) {
@@ -379,7 +417,7 @@ impl ApplicationHandler<Event> for App {
                     .audio
                     .as_ref()
                     .map_or([0.0; 16], PlaybackAudio::bands);
-                if let Err(error) = wallpaper.draw(audio_bands) {
+                if let Err(error) = wallpaper.draw(audio_bands, self.cursor_effects) {
                     self.fail(event_loop, error);
                 }
             }
@@ -682,13 +720,9 @@ impl Wallpaper {
         bounds: RECT,
     ) -> Result<Self> {
         let window = Arc::new(
-            event_loop.create_window(
-                Window::default_attributes()
-                    .with_title("Desktop Wallpapers")
-                    .with_visible(false)
-                    .with_decorations(false)
-                    .with_resizable(false),
-            )?,
+            event_loop
+                .create_window(layer.window_attributes()?)
+                .map_err(|error| format!("Create desktop child window: {error}"))?,
         );
         let desktop = Desktop::attach(&window, layer, bounds)?;
         let size = window.inner_size();
@@ -725,11 +759,13 @@ impl Wallpaper {
         }
     }
 
-    fn draw(&mut self, audio_bands: [f32; 16]) -> Result<()> {
+    fn draw(&mut self, audio_bands: [f32; 16], cursor_effects: bool) -> Result<()> {
         let size = self.window.inner_size();
         let time = (self.started.elapsed() - self.paused_duration).as_secs_f32();
         let inputs = FrameInputs {
-            cursor: desktop::cursor_in(self.bounds),
+            cursor: cursor_effects
+                .then(|| desktop::cursor_in(self.bounds))
+                .flatten(),
             audio_bands,
         };
         if self

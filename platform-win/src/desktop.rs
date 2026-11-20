@@ -1,4 +1,4 @@
-use std::{io, ptr};
+use std::{io, num::NonZeroIsize, ptr};
 
 use windows_sys::{
     Win32::{
@@ -14,8 +14,8 @@ use windows_sys::{
     w,
 };
 use winit::{
-    raw_window_handle::{HasWindowHandle, RawWindowHandle},
-    window::Window,
+    raw_window_handle::{HasWindowHandle, RawWindowHandle, Win32WindowHandle},
+    window::{Window, WindowAttributes},
 };
 
 const PROGMAN: PCWSTR = w!("Progman");
@@ -38,6 +38,24 @@ impl DesktopLayer {
         let (parent, above) = wallpaper_layer()?;
         Ok(Self { parent, above })
     }
+
+    pub fn window_attributes(self) -> io::Result<WindowAttributes> {
+        let parent = NonZeroIsize::new(self.parent as isize)
+            .filter(|_| unsafe { IsWindow(self.parent) != 0 })
+            .ok_or_else(|| io::Error::other("Explorer's wallpaper layer was closed"))?;
+        let handle = RawWindowHandle::Win32(Win32WindowHandle::new(parent));
+        // Explorer owns this HWND. Create the hidden render window as its child
+        // so it never has a top-level window that can be promoted on activation.
+        Ok(unsafe {
+            Window::default_attributes()
+                .with_title("Desktop Wallpapers")
+                .with_visible(false)
+                .with_active(false)
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_parent_window(Some(handle))
+        })
+    }
 }
 
 impl Desktop {
@@ -53,25 +71,23 @@ impl Desktop {
             set_style(
                 window,
                 GWL_STYLE,
-                (style & !(WS_POPUP as isize)) | WS_CHILD as isize | WS_CLIPSIBLINGS as isize,
+                style | (WS_DISABLED | WS_CLIPSIBLINGS) as isize,
             )?;
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-            let flags = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED;
+            let flags = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW;
             set_style(
                 window,
                 GWL_EXSTYLE,
                 (style & !(WS_EX_APPWINDOW as isize)) | flags as isize,
             )?;
-            if SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA) == 0 {
-                return Err(io::Error::last_os_error().into());
-            }
-            SetLastError(0);
-            if SetParent(window, layer.parent).is_null() && GetLastError() != 0 {
-                return Err(io::Error::last_os_error().into());
+            if GetParent(window) != layer.parent {
+                return Err("The wallpaper window is outside Explorer's desktop layer".into());
             }
         }
         let desktop = Self { window, layer };
-        desktop.fit(bounds)?;
+        desktop
+            .fit(bounds)
+            .map_err(|error| format!("Position wallpaper window: {error}"))?;
         Ok(desktop)
     }
 
@@ -99,7 +115,17 @@ impl Desktop {
     }
 
     pub fn keep_behind_icons(&self) -> io::Result<()> {
+        if self.layer.above == HWND_BOTTOM {
+            return Ok(());
+        }
         unsafe {
+            let mut sibling = GetWindow(self.layer.above, GW_HWNDNEXT);
+            while !sibling.is_null() {
+                if sibling == self.window {
+                    return Ok(());
+                }
+                sibling = GetWindow(sibling, GW_HWNDNEXT);
+            }
             if SetWindowPos(
                 self.window,
                 self.layer.above,
@@ -107,7 +133,7 @@ impl Desktop {
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
             ) == 0
             {
                 return Err(io::Error::last_os_error());
@@ -185,9 +211,14 @@ fn visible_bounds(window: HWND) -> Option<RECT> {
             || IsWindowVisible(window) == 0
             || IsIconic(window) != 0
             || window == GetDesktopWindow()
-            || window == GetShellWindow()
-            || !child(window, ICONS).is_null()
-            || is_wallpaper_layer(window)
+        {
+            return None;
+        }
+        let root = GetAncestor(window, GA_ROOT);
+        if root.is_null()
+            || root == GetShellWindow()
+            || !child(root, ICONS).is_null()
+            || is_wallpaper_layer(root)
         {
             return None;
         }
@@ -216,14 +247,16 @@ fn visible_bounds(window: HWND) -> Option<RECT> {
 }
 
 fn is_wallpaper_layer(window: HWND) -> bool {
+    class_is(window, "Progman") || class_is(window, "WorkerW")
+}
+
+fn class_is(window: HWND, class: &str) -> bool {
     let mut name = [0u16; 9];
     let length = unsafe { GetClassNameW(window, name.as_mut_ptr(), name.len() as i32) };
-    ["Progman", "WorkerW"].iter().any(|class| {
-        name[..length as usize]
-            .iter()
-            .copied()
-            .eq(class.encode_utf16())
-    })
+    name[..length as usize]
+        .iter()
+        .copied()
+        .eq(class.encode_utf16())
 }
 
 fn covers(window: RECT, monitor: RECT) -> bool {
@@ -272,10 +305,10 @@ fn wallpaper_layer() -> io::Result<(HWND, HWND)> {
         // Explorer's undocumented 0x052C message requests Explorer to prepare its
         // wallpaper rendering layer behind the desktop icons.
         // Assumptions about Explorer's desktop hierarchy:
-        // 1. Raised desktops and Windows 11 host the icon view (SHELLDLL_DefView)
-        //    directly inside Progman. On this hierarchy, the wallpaper window must
-        //    be parented directly to Progman, placed immediately behind the icon view
-        //    in Z-order.
+        // 1. Raised desktops host the icon view (SHELLDLL_DefView) inside Progman.
+        //    Prefer the visible WorkerW sibling behind the icon view. Its children
+        //    stay behind the icon view even when Explorer activates the desktop.
+        //    Some Explorer versions have no usable WorkerW and need a direct child.
         // 2. Classic Windows 10 hierarchy hosts SHELLDLL_DefView inside a top-level
         //    WorkerW window, and 0x052C spawns a separate WorkerW sibling immediately
         //    behind it in Z-order. On this hierarchy, the wallpaper window is parented
@@ -292,6 +325,20 @@ fn wallpaper_layer() -> io::Result<(HWND, HWND)> {
 
         let icons = child(progman, ICONS);
         if !icons.is_null() {
+            let mut sibling = GetWindow(icons, GW_HWNDNEXT);
+            while !sibling.is_null() {
+                if class_is(sibling, "WorkerW") && IsWindowVisible(sibling) != 0 {
+                    let mut shell: RECT = std::mem::zeroed();
+                    let mut worker: RECT = std::mem::zeroed();
+                    if GetWindowRect(progman, &mut shell) != 0
+                        && GetWindowRect(sibling, &mut worker) != 0
+                        && covers(worker, shell)
+                    {
+                        return Ok((sibling, HWND_BOTTOM));
+                    }
+                }
+                sibling = GetWindow(sibling, GW_HWNDNEXT);
+            }
             return Ok((progman, icons));
         }
 

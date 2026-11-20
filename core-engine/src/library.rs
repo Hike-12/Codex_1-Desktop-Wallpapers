@@ -64,6 +64,24 @@ pub fn thumbnail(pack: &Path) -> Result<image::DynamicImage> {
     Ok(pixels.thumbnail(480, 270))
 }
 
+/// Remove a pack from the gallery while keeping its files recoverable.
+pub fn trash_pack(root: &Path, pack: &Path) -> Result<()> {
+    let root = root.canonicalize()?;
+    let pack = pack.canonicalize()?;
+    if pack.parent() != Some(root.as_path()) || !pack.join("manifest.toml").is_file() {
+        return Err("Choose a wallpaper installed in the gallery".into());
+    }
+    let parent = root.parent().ok_or("Invalid wallpaper library directory")?;
+    let trash = parent.join("deleted-wallpapers");
+    fs::create_dir_all(&trash)?;
+    let destination = tempfile::Builder::new().prefix("pack-").tempdir_in(trash)?;
+    // Keep the library initialized even after the last pack is removed.
+    fs::File::create(root.join(".initialized"))?;
+    fs::rename(&pack, destination.path().join(pack.file_name().unwrap()))?;
+    let _ = destination.keep();
+    Ok(())
+}
+
 pub fn import(root: &Path, source: &Path) -> Result<PathBuf> {
     let extension = source
         .extension()
@@ -130,6 +148,29 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleting_the_last_pack_keeps_it_recoverable_and_does_not_reseed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("wallpapers");
+        let pack = root.join("example");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&pack)?;
+        fs::create_dir(&outside)?;
+        fs::write(pack.join("manifest.toml"), b"name = 'Example'")?;
+        fs::write(outside.join("manifest.toml"), b"name = 'Outside'")?;
+        assert!(trash_pack(&root, &outside).is_err());
+        assert!(outside.is_dir());
+        trash_pack(&root, &pack)?;
+        assert!(!pack.exists());
+        assert!(!install_built_ins(&root)?);
+        let recovery = fs::read_dir(temp.path().join("deleted-wallpapers"))?
+            .next()
+            .expect("one deleted wallpaper")?
+            .path();
+        assert!(recovery.join("example/manifest.toml").is_file());
+        Ok(())
+    }
 
     #[test]
     fn first_run_and_image_import_publish_complete_packs() -> Result<()> {

@@ -58,6 +58,7 @@ pub fn run() -> Result<()> {
             let mut gallery = Gallery {
                 root,
                 cards: Vec::new(),
+                delete_prompt: None,
                 state: None,
                 pending: None,
                 status_poll: None,
@@ -92,6 +93,7 @@ struct Update {
 struct Gallery {
     root: PathBuf,
     cards: Vec<Card>,
+    delete_prompt: Option<(String, PathBuf)>,
     state: Option<State>,
     pending: Option<(Receiver<Update>, bool)>,
     status_poll: Option<Receiver<Update>>,
@@ -153,7 +155,10 @@ impl Gallery {
                 message: None,
             };
             let result = match work {
-                Work::Control(control) => ipc::control(control),
+                Work::Control(control) => {
+                    update.refresh = matches!(control, Control::Delete(_));
+                    ipc::control(control)
+                }
                 Work::Select(path) => ipc::set(&path).and_then(|()| ipc::control(Control::Status)),
                 Work::Import(paths) => {
                     let mut latest = None;
@@ -344,6 +349,13 @@ impl eframe::App for Gallery {
                                     {
                                         work = Some(Work::Control(Control::Audio(audio)));
                                     }
+                                    let mut cursor_effects = state.cursor_effects;
+                                    if ui.checkbox(&mut cursor_effects, "Cursor effects").changed()
+                                    {
+                                        work = Some(Work::Control(Control::CursorEffects(
+                                            cursor_effects,
+                                        )));
+                                    }
                                     let mut fps = state.fps;
                                     egui::ComboBox::from_id_salt("fps")
                                         .selected_text(RichText::new(fps_label(fps)).size(13.0))
@@ -427,7 +439,18 @@ impl eframe::App for Gallery {
                                             .as_ref()
                                             .and_then(|state| state.active.as_ref())
                                             == Some(&card.path);
-                                        if draw_card(ui, card, width, active).clicked() {
+                                        let response = draw_card(ui, card, width, active);
+                                        let delete_rect = egui::Rect::from_min_size(
+                                            response.rect.right_bottom() - Vec2::new(62.0, 34.0),
+                                            Vec2::new(54.0, 24.0),
+                                        );
+                                        if ui
+                                            .place(delete_rect, egui::Button::new("Delete"))
+                                            .clicked()
+                                        {
+                                            self.delete_prompt =
+                                                Some((card.name.clone(), card.path.clone()));
+                                        } else if response.clicked() {
                                             work = Some(Work::Select(card.path.clone()));
                                         }
                                     }
@@ -436,6 +459,24 @@ impl eframe::App for Gallery {
                         });
                     });
             });
+        if let Some((name, path)) = self.delete_prompt.clone() {
+            let mut confirmed = false;
+            let mut cancelled = false;
+            let modal = egui::Modal::new(egui::Id::new("delete-wallpaper")).show(ctx, |ui| {
+                ui.heading("Delete wallpaper?");
+                ui.label(format!("“{name}” will be removed from the gallery."));
+                ui.horizontal(|ui| {
+                    cancelled = ui.button("Cancel").clicked();
+                    confirmed = ui.button("Delete wallpaper").clicked();
+                });
+            });
+            if confirmed {
+                work = Some(Work::Control(Control::Delete(path)));
+            }
+            if confirmed || cancelled || modal.should_close() {
+                self.delete_prompt = None;
+            }
+        }
         if self.pending.is_none() {
             if let Some(work) = work {
                 self.start(ctx, work);
@@ -527,7 +568,7 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::
     }
     let text_rect = egui::Rect::from_min_max(
         picture.left_bottom() + Vec2::new(2.0, 4.0),
-        rect.max - Vec2::new(8.0, 4.0),
+        rect.max - Vec2::new(66.0, 4.0),
     );
     let text_color = if active {
         ACCENT
@@ -536,12 +577,14 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::
     } else {
         Color32::from_rgb(205, 215, 225)
     };
-    painter.text(
-        egui::pos2(text_rect.min.x, text_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        &card.name,
-        egui::FontId::proportional(14.5),
-        text_color,
-    );
+    painter
+        .with_clip_rect(text_rect.intersect(ui.clip_rect()))
+        .text(
+            egui::pos2(text_rect.min.x, text_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            &card.name,
+            egui::FontId::proportional(14.5),
+            text_color,
+        );
     response
 }
