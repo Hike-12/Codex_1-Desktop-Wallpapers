@@ -53,21 +53,16 @@ impl Desktop {
             set_style(
                 window,
                 GWL_STYLE,
-                (style & !(WS_POPUP as isize)) | WS_CHILD as isize,
+                (style & !(WS_POPUP as isize)) | WS_CHILD as isize | WS_CLIPSIBLINGS as isize,
             )?;
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-            let mut flags = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW;
-            if layer.above != HWND_BOTTOM {
-                flags |= WS_EX_LAYERED;
-            }
+            let flags = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_LAYERED;
             set_style(
                 window,
                 GWL_EXSTYLE,
                 (style & !(WS_EX_APPWINDOW as isize)) | flags as isize,
             )?;
-            if layer.above != HWND_BOTTOM
-                && SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA) == 0
-            {
+            if SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA) == 0 {
                 return Err(io::Error::last_os_error().into());
             }
             SetLastError(0);
@@ -256,7 +251,17 @@ fn wallpaper_layer() -> io::Result<(HWND, HWND)> {
             return Err(io::Error::other("Explorer's Progman window was not found"));
         }
 
-        // Explorer's undocumented message requests a wallpaper WorkerW.
+        // Explorer's undocumented 0x052C message requests Explorer to prepare its
+        // wallpaper rendering layer behind the desktop icons.
+        // Assumptions about Explorer's desktop hierarchy:
+        // 1. Raised desktops and Windows 11 host the icon view (SHELLDLL_DefView)
+        //    directly inside Progman. On this hierarchy, the wallpaper window must
+        //    be parented directly to Progman, placed immediately behind the icon view
+        //    in Z-order.
+        // 2. Classic Windows 10 hierarchy hosts SHELLDLL_DefView inside a top-level
+        //    WorkerW window, and 0x052C spawns a separate WorkerW sibling immediately
+        //    behind it in Z-order. On this hierarchy, the wallpaper window is parented
+        //    to that sibling WorkerW at HWND_BOTTOM.
         SendMessageTimeoutW(
             progman,
             0x052C,
@@ -268,8 +273,7 @@ fn wallpaper_layer() -> io::Result<(HWND, HWND)> {
         );
 
         let icons = child(progman, ICONS);
-        // Raised desktops put the icon and wallpaper windows inside Progman.
-        if !icons.is_null() && !child(progman, WORKER).is_null() {
+        if !icons.is_null() {
             return Ok((progman, icons));
         }
 
