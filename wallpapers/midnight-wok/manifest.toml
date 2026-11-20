@@ -1,0 +1,4 @@
+name = "Midnight Wok"
+shader = "scene.wgsl"
+artwork = "wok.jpg"
+desktop_icons = true

@@ -2,12 +2,13 @@
 
 Desktop Wallpapers (`wallp`) is a Rust program that draws to the desktop background of a logged-in session. The native backend puts a surface where desktop icons and ordinary windows can appear above it. The shared renderer takes that surface and paints either a WGSL scene or a looping MP4. Each output can pause independently, while expensive inputs such as video decoding and audio capture are shared across outputs.
 
-This guide describes the implementation shipped in v0.1.0. The [README](README.md) covers installation, command syntax, and pack examples.
+This guide describes the engine and its interactive wallpaper packs. The [README](README.md) covers installation, command syntax, and pack examples. The verification table records what shipped in v0.1.0.
 
 - [Workspace and startup](#workspace-and-startup)
 - [Native desktop backends](#native-desktop-backends)
 - [Rendering and shader inputs](#rendering-and-shader-inputs)
 - [Scene selection and hot reload](#scene-selection-and-hot-reload)
+- [Textured shader packs and desktop icons](#textured-shader-packs-and-desktop-icons)
 - [MP4 playback](#mp4-playback)
 - [Audio, cursor, and power](#audio-cursor-and-power)
 - [Windows tray and IPC](#windows-tray-and-ipc)
@@ -107,6 +108,20 @@ The WGSL interface is a 96-byte uniform buffer at group 0, binding 0. The 16-byt
 The backend checks the scene on an approximately 500 ms interval while eligible to draw. For WGSL, it compares file contents or read errors with the prior result. On changed source, the engine compiles a candidate pipeline for every live renderer inside wgpu validation scopes. It installs the new pipelines only after all of them succeed. The last accepted source also initializes renderers created when a monitor is added. An unchanged invalid edit produces a single error until the file changes again.
 
 The startup scene loader opens a selected video once renderers are available. WGSL hot reload follows the resolved shader file. To load a different manifest target or replace an MP4, select it again from Windows or restart with the desired input on macOS or Linux. A failed startup asset can fall back to the built-in scene. A failed Windows live selection preserves the scene already playing. [Scene resolution, reload, and commit](core-engine/src/shader.rs)
+
+## Textured shader packs and desktop icons
+
+A WGSL pack can declare a contained `.jpg` file as `artwork`. The loader decodes it once for a scene change and prepares a textured pipeline on each display before committing the new scene. The renderer accepts artwork up to 4096 pixels on each axis, subject to the device's texture limits. The group 0 uniform layout is the same as for standalone WGSL.
+
+| Group 1 binding | WGSL type | Contents |
+| --- | --- | --- |
+| 0 | `texture_2d<f32>` | Artwork sampled as sRGB |
+| 1 | `sampler` | Linear filtering with clamped edges |
+| 2 | `texture_2d<f32>` | Desktop icon influence sampled as linear data |
+
+When `desktop_icons = true`, Windows polls Explorer's folder view through documented Shell COM interfaces. A worker reads item positions on request, converts them to screen coordinates, and assigns a visual ingredient from a hash of each Shell item ID. The render loop receives a snapshot and translates it into normalized coordinates per monitor. The reader starts only for an opted-in scene and the loop stops requesting new snapshots when all outputs pause. Platforms without an icon reader use a demonstration layout. A successful snapshot of an empty Windows desktop clears the influence field.
+
+The core adds overlapping radial stamps into a 320×180 texture when the layout changes. Its red channel stores combined influence, green identifies the dominant ingredient, blue stores the strongest stamp, and alpha measures overlap. The renderer blends a changed field over 650 ms so a moved cluster fades out of its old position and forms at its new position. This keeps the icon count out of the full-resolution shader loop. Tidal Islands thresholds the combined influence into water, shoals, and connected sandbars. Midnight Wok uses the same field to shade ingredients, shared heat, and steam. [Icon reader](platform-win/src/icons.rs), [field generation](core-engine/src/icons.rs), and [texture bindings](core-engine/src/texture.rs)
 
 ## MP4 playback
 

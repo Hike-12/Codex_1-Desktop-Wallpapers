@@ -16,6 +16,19 @@ Running with no arguments uses the built-in WGSL scene. Pass a `.wgsl` file, an 
 
 On Windows, the system tray lists installed packs and can switch to the built-in wallpaper, refresh the list, or quit. With the app running, use `.\wallp.exe set <file-or-pack>` from another terminal to switch live. On macOS and Linux, choose a file or pack at launch. WGSL edits reload during playback on all three platforms.
 
+## Interactive collection
+
+[Tidal Islands](wallpapers/tidal-islands) grows sandbars under Windows desktop shortcuts and joins nearby sandbars into a beach. Move a cluster and the tide washes over the old site while a new beach forms. [Midnight Wok](wallpapers/midnight-wok) turns shortcuts into ingredients and merges nearby heat into a shared sizzle. Both respond to the cursor where cursor input is available.
+
+Build the current source to run these textured packs, then pass the pack folder to `wallp` or copy it into the Windows tray's wallpaper folder and refresh the list.
+
+```sh
+cargo run --locked --bin wallp -- wallpapers/tidal-islands
+cargo run --locked --bin wallp -- wallpapers/midnight-wok
+```
+
+Windows reads Explorer's icon positions. macOS and Linux use an animated demonstration layout. If Windows auto-arranges your icons, turn off **View → Auto arrange icons** in Explorer's desktop menu to place them freely. Both scenes render at the output resolution. Their included 3840×2160 JPEGs were upscaled from original generated artwork.
+
 ## Wallpaper packs
 
 Put a `manifest.toml` and the referenced asset in one folder. The manifest accepts one asset field. Use paths relative to the pack directory.
@@ -28,6 +41,8 @@ shader = "nebula.wgsl"
 ```
 
 Use `vs_main` and `fs_main` as entry points. The uniform buffer is at group 0, binding 0. Its first 16 bytes contain pixel resolution, animation time in seconds, and padding. For cursor and playback bands, copy the layout from the [built-in WGSL scene](core-engine/src/default.wgsl).
+
+Add an optional `artwork = "background.jpg"` to bind a JPEG as a shader texture. With artwork present, `desktop_icons = true` enables the animated icon field. See the [texture bindings](ARCHITECTURE.md#textured-shader-packs-and-desktop-icons) and the two pack shaders for examples.
 
 **MP4**
 

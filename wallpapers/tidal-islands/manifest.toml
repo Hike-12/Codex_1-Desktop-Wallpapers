@@ -1,0 +1,4 @@
+name = "Tidal Islands"
+shader = "scene.wgsl"
+artwork = "water.jpg"
+desktop_icons = true
