@@ -12,6 +12,7 @@ use crate::Result;
 const FPS: u32 = 30;
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const TOOLS: &[(&str, &str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/video_tools.rs"));
 
 pub(crate) struct Video {
     path: PathBuf,
@@ -58,7 +59,7 @@ impl Video {
     pub(crate) fn open(path: &Path) -> Result<Arc<Self>> {
         let path = path.canonicalize()?;
         if !path.is_file() {
-            return Err("Expected an MP4 file".into());
+            return Err("Expected a video file".into());
         }
         let (width, height, duration) = probe(&path)?;
         let video = Self {
@@ -90,9 +91,7 @@ impl Video {
     fn preroll(&self, hardware: bool) -> io::Result<Decoder> {
         let (decoder, first) = self.start(hardware, true)?;
         first.recv_timeout(START_TIMEOUT).map_err(|_| {
-            io::Error::other(
-                "FFmpeg did not decode an MP4 frame. Check the file and installed codecs.",
-            )
+            io::Error::other("No frame could be decoded. Check the video file and codec.")
         })?;
         Ok(decoder)
     }
@@ -142,7 +141,7 @@ impl Video {
             }
             Err(error) => {
                 state.hardware = false;
-                eprintln!("wallp: could not restart MP4 playback: {error}");
+                eprintln!("wallp: could not restart video playback: {error}");
             }
         }
     }
@@ -163,7 +162,7 @@ impl Video {
         // A seeked decoder plays only the remainder. Some FFmpeg builds would
         // repeat that seek on every loop if looping were enabled here.
         let seek_segment = position > 0.0;
-        let mut command = command("ffmpeg");
+        let mut command = command("ffmpeg")?;
         command.args([
             "-v",
             "error",
@@ -184,7 +183,7 @@ impl Video {
                 if seek_segment { "0" } else { "-1" },
                 "-re",
                 "-f",
-                "mov",
+                demuxer(&self.path),
                 "-ss",
             ])
             .arg(format!("{position:.6}"))
@@ -270,8 +269,31 @@ impl Video {
     }
 }
 
-fn command(name: &str) -> Command {
-    let mut command = Command::new(name);
+fn command(name: &str) -> io::Result<Command> {
+    let path = if let Some(directory) = std::env::var_os("WALLP_FFMPEG_DIR") {
+        PathBuf::from(directory).join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    } else if let Some((_, filename, bytes)) = TOOLS.iter().find(|tool| tool.0 == name) {
+        let path = dirs::cache_dir()
+            .ok_or_else(|| io::Error::other("Could not find the video tool cache directory"))?
+            .join("wallp")
+            .join(concat!("decoder-", env!("CARGO_PKG_VERSION")))
+            .join(filename);
+        if !path
+            .metadata()
+            .is_ok_and(|meta| meta.len() == bytes.len() as u64)
+        {
+            crate::library::write_atomic(&path, bytes)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        }
+        path
+    } else {
+        PathBuf::from(name)
+    };
+    let mut command = Command::new(path);
     command.stdin(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     {
@@ -279,18 +301,65 @@ fn command(name: &str) -> Command {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    command
+    Ok(command)
 }
 
-fn probe(path: &Path) -> Result<(u32, u32, f64)> {
-    let mut child = command("ffprobe")
+fn demuxer(path: &Path) -> &'static str {
+    match path.extension().and_then(|value| value.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("mp4") => "mov",
+        _ => "matroska",
+    }
+}
+
+pub(crate) fn thumbnail(path: &Path, output: &Path) -> Result<()> {
+    probe(path)?;
+    let child = command("ffmpeg")?
         .args([
             "-v",
             "error",
             "-protocol_whitelist",
             "file,pipe",
             "-f",
-            "mov",
+            demuxer(path),
+            "-i",
+        ])
+        .arg(path)
+        .args([
+            "-map",
+            "0:V:0",
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=480:270:force_original_aspect_ratio=decrease",
+            "-an",
+            "-sn",
+            "-c:v",
+            "mjpeg",
+            "-threads:v",
+            "1",
+            "-f",
+            "image2",
+            "-update",
+            "1",
+        ])
+        .arg(output)
+        .spawn()
+        .map_err(|error| format!("Could not start the video decoder: {error}"))?;
+    if !wait_for_output(child)?.status.success() || !output.is_file() {
+        return Err("Could not generate a preview for this video".into());
+    }
+    Ok(())
+}
+
+fn probe(path: &Path) -> Result<(u32, u32, f64)> {
+    let child = command("ffprobe")?
+        .args([
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-f",
+            demuxer(path),
             "-select_streams",
             "V:0",
             "-show_entries",
@@ -304,20 +373,27 @@ fn probe(path: &Path) -> Result<(u32, u32, f64)> {
         .map_err(|error| {
             format!("Could not run ffprobe. Install FFmpeg and add it to PATH. {error}")
         })?;
+    let output = wait_for_output(child)?;
+    if !output.status.success() {
+        return Err("The video could not be read".into());
+    }
+    parse_probe(&String::from_utf8(output.stdout)?)
+}
+
+fn wait_for_output(mut child: Child) -> io::Result<std::process::Output> {
     let deadline = Instant::now() + START_TIMEOUT;
     while child.try_wait()?.is_none() {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Timed out inspecting the MP4 file".into());
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timed out inspecting the video",
+            ));
         }
         thread::sleep(Duration::from_millis(10));
     }
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err("FFprobe could not read the MP4 file".into());
-    }
-    parse_probe(&String::from_utf8(output.stdout)?)
+    child.wait_with_output()
 }
 
 fn parse_probe(text: &str) -> Result<(u32, u32, f64)> {
@@ -328,10 +404,10 @@ fn parse_probe(text: &str) -> Result<(u32, u32, f64)> {
     };
     let size = |name| -> Result<f64> {
         let value: u32 = key(name)
-            .ok_or("The MP4 contains no playable video stream")?
+            .ok_or("The file contains no playable video stream")?
             .parse()?;
         if value == 0 {
-            return Err("The MP4 has empty video dimensions".into());
+            return Err("The video has empty dimensions".into());
         }
         Ok(f64::from(value))
     };
@@ -352,7 +428,7 @@ fn parse_probe(text: &str) -> Result<(u32, u32, f64)> {
         .lines()
         .filter_map(|line| line.strip_prefix("duration=")?.parse::<f64>().ok())
         .find(|duration| duration.is_finite() && *duration > 0.0)
-        .ok_or("The MP4 has no valid duration")?;
+        .ok_or("The video has no valid duration")?;
     Ok((
         (width * factor).round().max(1.0) as u32,
         (height * factor).round().max(1.0) as u32,

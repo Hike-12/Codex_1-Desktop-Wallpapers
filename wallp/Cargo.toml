@@ -3,8 +3,12 @@ name = "wallp"
 version.workspace = true
 edition.workspace = true
 
+[dependencies]
+core-engine.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 platform-win = { path = "../platform-win" }
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 platform-linux = { path = "../platform-linux" }

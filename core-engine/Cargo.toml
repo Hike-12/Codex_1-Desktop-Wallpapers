@@ -4,9 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+dirs = "6"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 pollster = "0.4"
 rustfft = "6"
 serde = { version = "1", features = ["derive"] }
-toml = { version = "1", default-features = false, features = ["parse", "serde"] }
+tempfile = "3"
+toml = { version = "1", default-features = false, features = ["parse", "serde", "display"] }
 wgpu = { version = "24", default-features = false, features = ["dx12", "metal", "wgsl", "vulkan-portability"] }

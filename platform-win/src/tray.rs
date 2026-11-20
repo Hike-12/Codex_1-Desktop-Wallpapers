@@ -11,11 +11,13 @@ use windows_sys::{
 };
 
 const BUILT_IN: &str = "wallp.built-in";
+const GALLERY: &str = "wallp.gallery";
 const OPEN: &str = "wallp.open-folder";
 const REFRESH: &str = "wallp.refresh";
 const QUIT: &str = "wallp.quit";
 
 pub enum Action {
+    Gallery,
     BuiltIn,
     Select(PathBuf),
     Quit,
@@ -28,10 +30,7 @@ pub struct Tray {
 }
 
 impl Tray {
-    pub fn new() -> Result<Self> {
-        let folder = PathBuf::from(std::env::var_os("APPDATA").ok_or("APPDATA is unavailable")?)
-            .join("wallp")
-            .join("wallpapers");
+    pub fn new(folder: PathBuf) -> Result<Self> {
         let (menu, selections) = build_menu(installed_packs(&folder)?)?;
         let icon = TrayIconBuilder::new()
             .with_tooltip("Desktop Wallpapers")
@@ -48,6 +47,7 @@ impl Tray {
     pub fn action(&mut self, id: &MenuId) -> Result<Option<Action>> {
         let action = match id.as_ref() {
             BUILT_IN => Some(Action::BuiltIn),
+            GALLERY => Some(Action::Gallery),
             QUIT => Some(Action::Quit),
             OPEN => {
                 fs::create_dir_all(&self.folder)?;
@@ -55,9 +55,7 @@ impl Tray {
                 None
             }
             REFRESH => {
-                let (menu, selections) = build_menu(installed_packs(&self.folder)?)?;
-                self.icon.set_menu(Some(Box::new(menu)));
-                self.selections = selections;
+                self.refresh()?;
                 None
             }
             _ => self
@@ -68,10 +66,19 @@ impl Tray {
         };
         Ok(action)
     }
+
+    pub fn refresh(&mut self) -> Result<()> {
+        let (menu, selections) = build_menu(installed_packs(&self.folder)?)?;
+        self.icon.set_menu(Some(Box::new(menu)));
+        self.selections = selections;
+        Ok(())
+    }
 }
 
 fn build_menu(packs: Vec<(String, PathBuf)>) -> Result<(Menu, Vec<(MenuId, PathBuf)>)> {
     let menu = Menu::new();
+    menu.append(&MenuItem::with_id(GALLERY, "Open Gallery", true, None))?;
+    menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(
         BUILT_IN,
         "Use built-in wallpaper",
@@ -147,8 +154,8 @@ mod tests {
         let folder = PathBuf::from(r"C:\Wallpapers\Dusk");
         let (menu, selections) = build_menu(vec![("Dusk & night".into(), folder.clone())]).unwrap();
         let items = menu.items();
-        assert_eq!(items[0].id().as_ref(), BUILT_IN);
-        assert_eq!(items[1].id(), &selections[0].0);
+        assert_eq!(items[0].id().as_ref(), GALLERY);
+        assert_eq!(items[3].id(), &selections[0].0);
         assert_eq!(selections[0].1, folder);
         assert_eq!(items.last().unwrap().id().as_ref(), QUIT);
     }

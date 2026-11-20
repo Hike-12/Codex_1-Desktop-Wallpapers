@@ -18,20 +18,20 @@ pub(crate) struct Artwork {
 
 impl Artwork {
     pub(crate) fn load(path: &Path, desktop_icons: bool) -> Result<Self> {
-        let mut reader = image::ImageReader::with_format(
-            std::io::BufReader::new(std::fs::File::open(path)?),
-            image::ImageFormat::Jpeg,
-        );
+        Ok(Self {
+            pixels: Self::read(path)?.into_rgba8(),
+            desktop_icons,
+        })
+    }
+
+    pub(crate) fn read(path: &Path) -> Result<image::DynamicImage> {
+        let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
         let mut limits = image::Limits::default();
         limits.max_image_width = Some(MAX_ARTWORK_EDGE);
         limits.max_image_height = Some(MAX_ARTWORK_EDGE);
         limits.max_alloc = Some(128 * 1024 * 1024);
         reader.limits(limits);
-        let pixels = reader.decode()?.into_rgba8();
-        Ok(Self {
-            pixels,
-            desktop_icons,
-        })
+        Ok(reader.decode()?)
     }
 }
 

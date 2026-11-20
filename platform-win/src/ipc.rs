@@ -15,6 +15,7 @@ use interprocess::{
     },
     os::windows::{local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor},
 };
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     runtime::{Builder, Runtime},
@@ -58,19 +59,52 @@ pub fn set(path: &Path) -> Result<()> {
         .encode_wide()
         .flat_map(u16::to_le_bytes)
         .collect();
+    let reply = request(&payload)?;
+    if !reply.is_empty() {
+        return Err(String::from_utf8(reply)?.into());
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum Control {
+    Status,
+    OpenGallery,
+    Pause(bool),
+    Audio(bool),
+    Fps(u8),
+    Startup(bool),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct State {
+    pub active: Option<PathBuf>,
+    pub paused: bool,
+    pub audio: bool,
+    pub fps: u8,
+    pub startup: bool,
+}
+
+pub fn control(control: Control) -> Result<State> {
+    let mut payload = vec![0, 0];
+    serde_json::to_writer(&mut payload, &control)?;
+    let reply = request(&payload)?;
+    serde_json::from_slice::<std::result::Result<State, String>>(&reply)
+        .map_err(|_| String::from_utf8_lossy(&reply).into_owned())?
+        .map_err(Into::into)
+}
+
+fn request(payload: &[u8]) -> Result<Vec<u8>> {
     runtime()?.block_on(async {
         let mut stream = timeout(IO_TIMEOUT, Stream::connect(socket_name()?))
             .await
             .map_err(|_| "Timed out connecting to wallp")?
             .map_err(|error| format!("Could not connect to wallp. Start wallp first. {error}"))?;
-        timeout(IO_TIMEOUT, write_message(&mut stream, &payload)).await??;
+        timeout(IO_TIMEOUT, write_message(&mut stream, payload)).await??;
         let reply = timeout(SWITCH_TIMEOUT + IO_TIMEOUT, read_message(&mut stream))
             .await
             .map_err(|_| "Timed out waiting for wallp to switch wallpapers")??;
-        if !reply.is_empty() {
-            return Err(String::from_utf8(reply)?.into());
-        }
-        Ok(())
+        Ok(reply)
     })
 }
 
@@ -83,25 +117,33 @@ async fn serve(listener: Listener, proxy: EventLoopProxy<Event>) {
                 return;
             }
         };
-        let result = dispatch(&mut stream, &proxy).await;
-        let reply = result.err().unwrap_or_default();
-        let limit = reply.floor_char_boundary(reply.len().min(MAX_MESSAGE));
-        let _ = timeout(
-            IO_TIMEOUT,
-            write_message(&mut stream, &reply.as_bytes()[..limit]),
-        )
-        .await;
+        let reply = dispatch(&mut stream, &proxy)
+            .await
+            .unwrap_or_else(String::into_bytes);
+        let _ = timeout(IO_TIMEOUT, write_message(&mut stream, &reply)).await;
     }
 }
 
 async fn dispatch(
     stream: &mut Stream,
     proxy: &EventLoopProxy<Event>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<Vec<u8>, String> {
     let payload = timeout(IO_TIMEOUT, read_message(stream))
         .await
         .map_err(|_| "Timed out reading the wallpaper path")?
         .map_err(|error| error.to_string())?;
+    if let Some(payload) = payload.strip_prefix(&[0, 0]) {
+        let control = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let (reply, response) = oneshot::channel();
+        proxy
+            .send_event(Event::Control { control, reply })
+            .map_err(|_| "wallp is closing")?;
+        let result = timeout(SWITCH_TIMEOUT, response)
+            .await
+            .map_err(|_| "Timed out waiting for wallp")?
+            .map_err(|_| "wallp is closing")?;
+        return serde_json::to_vec(&result).map_err(|e| e.to_string());
+    }
     let (pairs, remainder) = payload.as_chunks::<2>();
     let units: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
     let path = PathBuf::from(OsString::from_wide(&units));
@@ -115,7 +157,8 @@ async fn dispatch(
     timeout(SWITCH_TIMEOUT, response)
         .await
         .map_err(|_| "Timed out switching wallpapers")?
-        .map_err(|_| "wallp is closing")?
+        .map_err(|_| "wallp is closing")??;
+    Ok(Vec::new())
 }
 
 async fn read_message(stream: &mut Stream) -> io::Result<Vec<u8>> {

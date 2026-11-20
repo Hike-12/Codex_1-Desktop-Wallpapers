@@ -407,3 +407,4 @@ async fn compile(
     }
     Ok(pipeline)
 }
+pub mod library;

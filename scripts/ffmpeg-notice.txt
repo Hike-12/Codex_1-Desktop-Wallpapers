@@ -1,0 +1,9 @@
+Release builds bundle FFmpeg and ffprobe from FFmpeg 8.1.1, built without
+GPL or nonfree options. FFmpeg is copyright the FFmpeg developers and is
+distributed under the GNU Lesser General Public License, version 2.1 or later.
+wallp runs these programs as separate processes. You can replace them by
+setting WALLP_FFMPEG_DIR to a directory containing your builds of both tools.
+
+Corresponding source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz
+License text: https://ffmpeg.org/doxygen/8.1/md_LICENSE.html
+Build recipe: https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/blob/v0.3.0/scripts/build-ffmpeg.sh

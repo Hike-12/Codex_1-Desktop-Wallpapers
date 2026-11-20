@@ -32,21 +32,21 @@ fn read_pack(folder: &Path) -> Result<Pack> {
         return Err("Expected a wallpaper name on one line".into());
     }
 
-    let (path, ext) = match (manifest.shader, manifest.video) {
-        (Some(path), None) => (path, "wgsl"),
-        (None, Some(path)) => (path, "mp4"),
+    let (path, extensions) = match (manifest.shader, manifest.video) {
+        (Some(path), None) => (path, &["wgsl"][..]),
+        (None, Some(path)) => (path, VIDEO_EXTENSIONS),
         _ => return Err("A wallpaper pack needs exactly one 'shader' or 'video' field".into()),
     };
     let root = folder.canonicalize()?;
-    let asset = resolve_pack_asset(&root, &path, ext)?;
-    if (manifest.artwork.is_some() && ext != "wgsl")
+    let asset = resolve_pack_asset(&root, &path, extensions)?;
+    if (manifest.artwork.is_some() && is_video(&asset))
         || (manifest.desktop_icons && manifest.artwork.is_none())
     {
         return Err("Artwork requires a shader, and desktop icons require artwork".into());
     }
     let artwork = manifest
         .artwork
-        .map(|path| resolve_pack_asset(&root, &path, "jpg"))
+        .map(|path| resolve_pack_asset(&root, &path, &["jpg", "jpeg", "png", "webp"]))
         .transpose()?;
     Ok(Pack {
         name: name.to_owned(),
@@ -56,8 +56,31 @@ fn read_pack(folder: &Path) -> Result<Pack> {
     })
 }
 
-fn resolve_pack_asset(root: &Path, path: &Path, ext: &str) -> Result<PathBuf> {
-    validate_pack_path(path, ext)?;
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "mkv"];
+
+pub(crate) fn is_video(path: &Path) -> bool {
+    VIDEO_EXTENSIONS
+        .iter()
+        .any(|extension| has_extension(path, extension))
+}
+
+pub(crate) fn pack_artwork(path: &Path) -> Result<PathBuf> {
+    read_pack(path)?
+        .artwork
+        .ok_or_else(|| "No artwork preview".into())
+}
+
+fn resolve_pack_asset(root: &Path, path: &Path, extensions: &[&str]) -> Result<PathBuf> {
+    if !extensions
+        .iter()
+        .any(|ext| validate_pack_path(path, ext).is_ok())
+    {
+        return Err(format!(
+            "Expected a relative {} file inside the pack",
+            extensions.join("/")
+        )
+        .into());
+    }
     let asset = root.join(path).canonicalize()?;
     if !asset.starts_with(root) || !asset.is_file() {
         return Err("The asset must be a file inside its wallpaper pack".into());
@@ -138,14 +161,14 @@ impl SceneFile {
                 last_read: None,
                 last_good: None,
             })
-        } else if has_extension(&path, "mp4") {
+        } else if is_video(&path) {
             SceneSource::Video {
                 playback: None,
                 attempted: false,
             }
         } else {
             return Err(format!(
-                "{}: expected a .wgsl file, .mp4 file, or pack folder",
+                "{}: expected a WGSL file, a supported video, or a pack folder",
                 path.display()
             )
             .into());
