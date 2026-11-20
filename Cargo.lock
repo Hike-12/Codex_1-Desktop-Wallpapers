@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "core-engine"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "dirs",
  "image",
@@ -2295,7 +2295,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform-linux"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "core-engine",
  "libpulse-binding",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "platform-mac"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "core-engine",
  "core-foundation",
@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "platform-win"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "core-engine",
  "eframe",
@@ -3303,7 +3303,7 @@ dependencies = [
 
 [[package]]
 name = "wallp"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "core-engine",
  "platform-linux",
