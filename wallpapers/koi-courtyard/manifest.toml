@@ -1,0 +1,4 @@
+name = "Koi Courtyard"
+shader = "scene.wgsl"
+artwork = "background.jpg"
+desktop_icons = true

@@ -1,0 +1,4 @@
+name = "Rain on Glass"
+shader = "scene.wgsl"
+artwork = "background.jpg"
+desktop_icons = true

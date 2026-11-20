@@ -18,7 +18,18 @@ On Windows, the system tray lists installed packs and can switch to the built-in
 
 ## Interactive collection
 
-[Tidal Islands](wallpapers/tidal-islands) grows sandbars under Windows desktop shortcuts and joins nearby sandbars into a beach. Move a cluster and the tide washes over the old site while a new beach forms. [Midnight Wok](wallpapers/midnight-wok) turns shortcuts into ingredients and merges nearby heat into a shared sizzle. Both respond to the cursor where cursor input is available.
+| Pack | What the icon layout changes |
+| --- | --- |
+| [Tidal Islands](wallpapers/tidal-islands) | Sandbars join into beaches. Move a cluster and the sea fills the old shoreline |
+| [Midnight Wok](wallpapers/midnight-wok) | Shortcuts become ingredients that sizzle together under drifting steam |
+| [Neon Borough](wallpapers/neon-borough) | Neighborhoods light up, and traffic travels along roads between shortcuts |
+| [Koi Courtyard](wallpapers/koi-courtyard) | Lily pads grow in clusters and koi steer around the beds |
+| [Circuit Foundry](wallpapers/circuit-foundry) | Chip sockets connect via copper traces with traveling pulses |
+| [Glacier Atlas](wallpapers/glacier-atlas) | Ice floes meet in blue fissures and thaw after you move the icons |
+| [Star Cartographer](wallpapers/star-cartographer) | Shortcuts become stars linked into constellations |
+| [Ember Forge](wallpapers/ember-forge) | Hot spots connect through molten channels and cool where shortcuts leave |
+| [Moss Terrarium](wallpapers/moss-terrarium) | Moss and small leaves form connected gardens on damp slate |
+| [Rain on Glass](wallpapers/rain-on-glass) | Water bends around the icons and runs along channels between them |
 
 Build the current source to run these textured packs, then pass the pack folder to `wallp` or copy it into the Windows tray's wallpaper folder and refresh the list.
 

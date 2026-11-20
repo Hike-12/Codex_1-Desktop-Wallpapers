@@ -1,0 +1,4 @@
+name = "Moss Terrarium"
+shader = "scene.wgsl"
+artwork = "background.jpg"
+desktop_icons = true

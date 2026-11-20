@@ -118,10 +118,13 @@ A WGSL pack can declare a contained `.jpg` file as `artwork`. The loader decodes
 | 0 | `texture_2d<f32>` | Artwork sampled as sRGB |
 | 1 | `sampler` | Linear filtering with clamped edges |
 | 2 | `texture_2d<f32>` | Desktop icon influence sampled as linear data |
+| 3 | `texture_2d<f32>` | Nearby icon connections sampled as linear data |
 
 When `desktop_icons = true`, Windows polls Explorer's folder view through documented Shell COM interfaces. A worker reads item positions on request, converts them to screen coordinates, and assigns a visual ingredient from a hash of each Shell item ID. The render loop receives a snapshot and translates it into normalized coordinates per monitor. The reader starts only for an opted-in scene and the loop stops requesting new snapshots when all outputs pause. Platforms without an icon reader use a demonstration layout. A successful snapshot of an empty Windows desktop clears the influence field.
 
-The core adds overlapping radial stamps into a 320×180 texture when the layout changes. Its red channel stores combined influence, green identifies the dominant ingredient, blue stores the strongest stamp, and alpha measures overlap. The renderer blends a changed field over 650 ms so a moved cluster fades out of its old position and forms at its new position. This keeps the icon count out of the full-resolution shader loop. Tidal Islands thresholds the combined influence into water, shoals, and connected sandbars. Midnight Wok uses the same field to shade ingredients, shared heat, and steam. [Icon reader](platform-win/src/icons.rs), [field generation](core-engine/src/icons.rs), and [texture bindings](core-engine/src/texture.rs)
+The core adds overlapping radial stamps into a 320×180 texture when the layout changes. Its red channel stores combined influence, green identifies the dominant ingredient, blue stores the strongest stamp, and alpha measures overlap. Tidal Islands thresholds the combined influence into water, shoals, and connected sandbars. Midnight Wok uses the same field to shade ingredients, shared heat, and steam.
+
+The core also links nearby icon centers using the shortest candidate in each of four directions and rasterizes those connections into a second 320×180 texture. Red stores the centerline strength, green stores progress along the connection, and blue stores a wider falloff. A shader can use these values to draw a road and animate a vehicle along it, as Neon Borough does. Both fields blend over 650 ms when the layout changes, keeping icon enumeration and connection calculations out of the full-resolution shader loop. [Icon reader](platform-win/src/icons.rs), [field generation](core-engine/src/icons.rs), and [texture bindings](core-engine/src/texture.rs)
 
 ## MP4 playback
 
