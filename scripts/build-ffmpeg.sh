@@ -17,16 +17,16 @@ printf '%s  %s\n' "$checksum" source.tar.xz | shasum -a 256 -c
 tar -xf source.tar.xz
 cd "ffmpeg-$version"
 
-options=()
+set --
 suffix=
 if [[ "$target" == windows ]]; then
-  options+=(--enable-cross-compile --target-os=mingw32 --arch=x86_64
+  set -- --enable-cross-compile --target-os=mingw32 --arch=x86_64 \
     --cross-prefix=x86_64-w64-mingw32- --cc=x86_64-w64-mingw32-gcc-posix
-    --extra-ldflags=-static)
+    --extra-ldflags=-static
   suffix=.exe
 fi
 
-./configure "${options[@]}" --disable-autodetect --disable-doc \
+./configure "$@" --disable-autodetect --disable-doc \
   --disable-debug --disable-network --disable-avdevice --disable-ffplay \
   --disable-encoders --enable-encoder=rawvideo,mjpeg \
   --disable-muxers --enable-muxer=rawvideo,image2 \

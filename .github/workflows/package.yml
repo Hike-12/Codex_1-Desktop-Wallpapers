@@ -23,17 +23,56 @@ jobs:
           path: decoder/*.exe
           if-no-files-found: error
           retention-days: 1
-  package:
+  package-windows:
+    name: wallp-windows-x86_64.zip
+    runs-on: windows-latest
+    needs: windows-decoder
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: windows-decoder
+          path: decoder
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build the Windows release binary
+        shell: pwsh
+        env:
+          WALLP_FFMPEG_DIR: ${{ github.workspace }}/decoder
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo +stable build --locked --release --bin wallp --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force target/release | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/wallp.exe target/release/wallp.exe
+      - name: Check and archive the Windows binary
+        shell: pwsh
+        run: |
+          $check = Start-Process -FilePath target/release/wallp.exe -ArgumentList '--help' -WindowStyle Hidden -Wait -PassThru
+          if ($check.ExitCode -ne 0) { exit $check.ExitCode }
+          Compress-Archive -LiteralPath target/release/wallp.exe -DestinationPath wallp-windows-x86_64.zip
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: wallp.exe
+          path: target/release/wallp.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: wallp-windows-x86_64.zip
+          path: wallp-windows-x86_64.zip
+          if-no-files-found: error
+          compression-level: 0
+  package-unix:
     name: ${{ matrix.archive }}
     runs-on: ${{ matrix.runner }}
-    needs: windows-decoder
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: windows-latest
-            archive: wallp-windows-x86_64.zip
           - runner: ubuntu-24.04
             archive: wallp-linux-x86_64.tar.gz
           - runner: macos-15
@@ -53,46 +92,16 @@ jobs:
         if: runner.os == 'macOS' && runner.arch == 'X64'
         run: brew install nasm
       - name: Build the Unix decoder
-        if: runner.os != 'Windows'
-        run: bash scripts/build-ffmpeg.sh decoder
-      - uses: actions/download-artifact@v8.0.1
-        if: runner.os == 'Windows'
-        with:
-          name: windows-decoder
-          path: decoder
+        run: |
+          bash scripts/build-ffmpeg.sh decoder
+          test -x decoder/ffmpeg && test -x decoder/ffprobe
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
       - name: Build the release binary
-        if: runner.os != 'Windows'
         env:
           WALLP_FFMPEG_DIR: ${{ github.workspace }}/decoder
         run: cargo +stable build --locked --release --bin wallp
-      - name: Build the Windows release binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          WALLP_FFMPEG_DIR: ${{ github.workspace }}/decoder
-          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
-        run: |
-          cargo +stable build --locked --release --bin wallp --target x86_64-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Force target/release | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/wallp.exe target/release/wallp.exe
-      - name: Check and archive the Windows binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $check = Start-Process -FilePath target/release/wallp.exe -ArgumentList '--help' -WindowStyle Hidden -Wait -PassThru
-          if ($check.ExitCode -ne 0) { exit $check.ExitCode }
-          Compress-Archive -LiteralPath target/release/wallp.exe -DestinationPath '${{ matrix.archive }}'
-      - uses: actions/upload-artifact@v7.0.2
-        if: runner.os == 'Windows'
-        with:
-          name: wallp.exe
-          path: target/release/wallp.exe
-          if-no-files-found: error
       - name: Check and archive the Unix binary
-        if: runner.os != 'Windows'
         shell: bash
         run: |
           ./target/release/wallp --help
