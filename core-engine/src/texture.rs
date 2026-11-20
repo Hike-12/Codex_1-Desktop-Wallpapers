@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     Result,
-    icons::{FIELD_HEIGHT, FIELD_WIDTH, IconLayout},
+    icons::{FIELD_BYTES, FIELD_HEIGHT, FIELD_WIDTH, IconLayout},
 };
 
 const TRANSITION: Duration = Duration::from_millis(650);
@@ -37,16 +37,16 @@ impl Artwork {
 
 pub(crate) struct SceneTexture {
     pub(crate) bind_group: wgpu::BindGroup,
-    field: wgpu::Texture,
+    fields: [wgpu::Texture; 2],
     icons: Option<IconLayout>,
-    pixels: Vec<u8>,
+    pixels: [Vec<u8>; 2],
     transition: Option<Transition>,
 }
 
 struct Transition {
     started: Instant,
-    from: Vec<u8>,
-    to: Vec<u8>,
+    from: [Vec<u8>; 2],
+    to: [Vec<u8>; 2],
 }
 
 impl SceneTexture {
@@ -68,13 +68,15 @@ impl SceneTexture {
             wgpu::TextureFormat::Rgba8UnormSrgb,
         );
         upload(queue, &image, artwork.pixels.as_raw());
-        let field = make_texture(
-            device,
-            "Desktop icon field",
-            FIELD_WIDTH,
-            FIELD_HEIGHT,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let fields = ["Desktop icon field", "Desktop link field"].map(|label| {
+            make_texture(
+                device,
+                label,
+                FIELD_WIDTH,
+                FIELD_HEIGHT,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+        });
         let icons = artwork.desktop_icons.then(|| {
             if cfg!(windows) {
                 IconLayout {
@@ -86,10 +88,12 @@ impl SceneTexture {
             }
         });
         let pixels = icons.as_ref().map_or_else(
-            || vec![0; (FIELD_WIDTH * FIELD_HEIGHT * 4) as usize],
-            IconLayout::rasterize,
+            || [vec![0; FIELD_BYTES], vec![0; FIELD_BYTES]],
+            |icons| [icons.rasterize(), icons.rasterize_links()],
         );
-        upload(queue, &field, &pixels);
+        for (field, pixels) in fields.iter().zip(&pixels) {
+            upload(queue, field, pixels);
+        }
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -116,10 +120,13 @@ impl SceneTexture {
                     count: None,
                 },
                 sampled(2),
+                sampled(3),
             ],
         });
         let image_view = image.create_view(&Default::default());
-        let field_view = field.create_view(&Default::default());
+        let [icon_view, link_view] = fields
+            .each_ref()
+            .map(|field| field.create_view(&Default::default()));
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Wallpaper artwork bindings"),
             layout: &layout,
@@ -134,7 +141,11 @@ impl SceneTexture {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&field_view),
+                    resource: wgpu::BindingResource::TextureView(&icon_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&link_view),
                 },
             ],
         });
@@ -142,7 +153,7 @@ impl SceneTexture {
             layout,
             Self {
                 bind_group,
-                field,
+                fields,
                 icons,
                 pixels,
                 transition: None,
@@ -158,7 +169,7 @@ impl SceneTexture {
         self.transition = Some(Transition {
             started: Instant::now(),
             from: self.pixels.clone(),
-            to: layout.rasterize(),
+            to: [layout.rasterize(), layout.rasterize_links()],
         });
     }
 
@@ -168,29 +179,40 @@ impl SceneTexture {
         };
         let t = (transition.started.elapsed().as_secs_f32() / TRANSITION.as_secs_f32()).min(1.0);
         let blend = t * t * (3.0 - 2.0 * t);
-        for ((output, from), to) in self
-            .pixels
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(transition.from.as_chunks::<4>().0)
-            .zip(transition.to.as_chunks::<4>().0)
-        {
-            for channel in [0, 2, 3] {
-                let from = f32::from(from[channel]);
-                let to = f32::from(to[channel]);
-                output[channel] = (from + (to - from) * blend).round() as u8;
-            }
-            output[1] = if f32::from(to[2]) * blend >= f32::from(from[2]) * (1.0 - blend) {
-                to[1]
-            } else {
-                from[1]
-            };
+        for (index, field) in self.fields.iter().enumerate() {
+            let pixels = &mut self.pixels[index];
+            blend_field(
+                pixels,
+                &transition.from[index],
+                &transition.to[index],
+                blend,
+            );
+            upload(queue, field, pixels);
         }
-        upload(queue, &self.field, &self.pixels);
         if t >= 1.0 {
             self.transition = None;
         }
+    }
+}
+
+fn blend_field(pixels: &mut [u8], from: &[u8], to: &[u8], blend: f32) {
+    for ((output, from), to) in pixels
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(from.as_chunks::<4>().0)
+        .zip(to.as_chunks::<4>().0)
+    {
+        for channel in [0, 2, 3] {
+            let from = f32::from(from[channel]);
+            let to = f32::from(to[channel]);
+            output[channel] = (from + (to - from) * blend).round() as u8;
+        }
+        output[1] = if f32::from(to[2]) * blend >= f32::from(from[2]) * (1.0 - blend) {
+            to[1]
+        } else {
+            from[1]
+        };
     }
 }
 
