@@ -62,6 +62,8 @@ cargo test --workspace --locked
 
 The workspace separates the shared renderer from the Explorer, AppKit, X11, and Wayland backends. [CI](https://github.com/Hike-12/Codex_1-Desktop-Wallpapers/actions/workflows/ci.yml) checks Windows, macOS, and Linux.
 
+For the code map, native window lifecycles, rendering and playback flows, and release process, see the [architecture guide](ARCHITECTURE.md).
+
 Windows desktop tests used Explorer. Linux desktop tests used X11/Openbox and headless Sway. macOS build checks cover Apple Silicon and Intel. Native Finder placement, audio consent, and physical battery transitions still need live verification.
 
 ### Fullscreen pause measurement
