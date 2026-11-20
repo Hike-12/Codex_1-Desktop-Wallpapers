@@ -42,6 +42,7 @@ pub fn run() -> Result<()> {
                 cards: Vec::new(),
                 state: None,
                 pending: None,
+                status_poll: None,
                 status: None,
                 next_poll: Instant::now(),
             };
@@ -75,6 +76,7 @@ struct Gallery {
     cards: Vec<Card>,
     state: Option<State>,
     pending: Option<(Receiver<Update>, bool)>,
+    status_poll: Option<Receiver<Update>>,
     status: Option<String>,
     next_poll: Instant,
 }
@@ -119,10 +121,13 @@ impl Gallery {
         let root = self.root.clone();
         let ctx = ctx.clone();
         let importing = matches!(work, Work::Import(_));
-        if !matches!(work, Work::Control(Control::Status)) {
+        if matches!(work, Work::Control(Control::Status)) {
+            self.status_poll = Some(rx);
+        } else {
             self.status = None;
+            self.status_poll = None;
+            self.pending = Some((rx, importing));
         }
-        self.pending = Some((rx, importing));
         std::thread::spawn(move || {
             let mut update = Update {
                 state: None,
@@ -169,21 +174,23 @@ impl Gallery {
     }
 
     fn finish(&mut self, ctx: &egui::Context) {
+        if let Some(receiver) = self.status_poll.take() {
+            match receiver.try_recv() {
+                Ok(update) => {
+                    self.apply_update(ctx, update);
+                    self.next_poll = Instant::now() + Duration::from_secs(2);
+                }
+                Err(TryRecvError::Empty) => self.status_poll = Some(receiver),
+                Err(TryRecvError::Disconnected) => {
+                    self.next_poll = Instant::now() + Duration::from_secs(2);
+                }
+            }
+        }
         let Some((receiver, _)) = &self.pending else {
             return;
         };
         match receiver.try_recv() {
-            Ok(update) => {
-                if let Some(message) = update.message {
-                    self.status = Some(message);
-                }
-                if let Some(state) = update.state {
-                    self.state = Some(state);
-                }
-                if update.refresh {
-                    self.refresh(ctx);
-                }
-            }
+            Ok(update) => self.apply_update(ctx, update),
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 self.status = Some("The wallpaper request did not finish".into());
@@ -191,6 +198,18 @@ impl Gallery {
         }
         self.pending = None;
         self.next_poll = Instant::now() + Duration::from_secs(2);
+    }
+
+    fn apply_update(&mut self, ctx: &egui::Context, update: Update) {
+        if let Some(message) = update.message {
+            self.status = Some(message);
+        }
+        if let Some(state) = update.state {
+            self.state = Some(state);
+        }
+        if update.refresh {
+            self.refresh(ctx);
+        }
     }
 }
 
@@ -321,10 +340,14 @@ impl eframe::App for Gallery {
         if self.pending.is_none() {
             if let Some(work) = work {
                 self.start(ctx, work);
-            } else if Instant::now() >= self.next_poll {
-                self.start(ctx, Work::Control(Control::Status));
-            } else {
-                ctx.request_repaint_after(self.next_poll.saturating_duration_since(Instant::now()));
+            } else if self.status_poll.is_none() {
+                if Instant::now() >= self.next_poll {
+                    self.start(ctx, Work::Control(Control::Status));
+                } else {
+                    ctx.request_repaint_after(
+                        self.next_poll.saturating_duration_since(Instant::now()),
+                    );
+                }
             }
         }
     }
