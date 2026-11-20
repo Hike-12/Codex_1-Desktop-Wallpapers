@@ -33,12 +33,15 @@ pub(crate) struct Frame {
 struct DecoderState {
     decoder: Option<Decoder>,
     hardware: bool,
+    restart_at_beginning: bool,
     retry_at: Instant,
 }
 
 struct Decoder {
     child: Child,
     reader: Option<JoinHandle<()>>,
+    seek_segment: bool,
+    first_serial: u64,
 }
 
 impl Drop for Decoder {
@@ -67,6 +70,7 @@ impl Video {
             state: Mutex::new(DecoderState {
                 decoder: None,
                 hardware: true,
+                restart_at_beginning: false,
                 retry_at: Instant::now(),
             }),
         };
@@ -84,7 +88,7 @@ impl Video {
     }
 
     fn preroll(&self, hardware: bool) -> io::Result<Decoder> {
-        let (decoder, first) = self.start(hardware)?;
+        let (decoder, first) = self.start(hardware, true)?;
         first.recv_timeout(START_TIMEOUT).map_err(|_| {
             io::Error::other(
                 "FFmpeg did not decode an MP4 frame. Check the file and installed codecs.",
@@ -114,15 +118,28 @@ impl Video {
             {
                 return;
             }
+            let seek_segment = decoder.seek_segment;
+            let decoded = self
+                .frame()
+                .is_some_and(|frame| frame.serial > decoder.first_serial);
+            if seek_segment {
+                state.restart_at_beginning = true;
+                state.retry_at = Instant::now();
+            }
+            if !seek_segment || !decoded {
+                state.hardware = false;
+            }
             state.decoder = None;
-            state.hardware = false;
         }
         if Instant::now() < state.retry_at {
             return;
         }
         state.retry_at = Instant::now() + RETRY_INTERVAL;
-        match self.start(state.hardware) {
-            Ok((decoder, _)) => state.decoder = Some(decoder),
+        match self.start(state.hardware, state.restart_at_beginning) {
+            Ok((decoder, _)) => {
+                state.decoder = Some(decoder);
+                state.restart_at_beginning = false;
+            }
             Err(error) => {
                 state.hardware = false;
                 eprintln!("wallp: could not restart MP4 playback: {error}");
@@ -130,11 +147,22 @@ impl Video {
         }
     }
 
-    fn start(&self, hardware: bool) -> io::Result<(Decoder, mpsc::Receiver<()>)> {
+    fn start(
+        &self,
+        hardware: bool,
+        from_beginning: bool,
+    ) -> io::Result<(Decoder, mpsc::Receiver<()>)> {
         let previous = self.frame();
-        let (mut serial, position) = previous
+        let (mut serial, mut position) = previous
             .as_ref()
             .map_or((0, 0.0), |frame| (frame.serial, frame.position));
+        let first_serial = serial;
+        if from_beginning {
+            position = 0.0;
+        }
+        // A seeked decoder plays only the remainder. Some FFmpeg builds would
+        // repeat that seek on every loop if looping were enabled here.
+        let seek_segment = position > 0.0;
         let mut command = command("ffmpeg");
         command.args([
             "-v",
@@ -151,7 +179,14 @@ impl Video {
             self.width, self.height,
         );
         let mut child = command
-            .args(["-stream_loop", "-1", "-re", "-f", "mov", "-ss"])
+            .args([
+                "-stream_loop",
+                if seek_segment { "0" } else { "-1" },
+                "-re",
+                "-f",
+                "mov",
+                "-ss",
+            ])
             .arg(format!("{position:.6}"))
             .arg("-i")
             .arg(&self.path)
@@ -221,6 +256,8 @@ impl Video {
                 Decoder {
                     child,
                     reader: Some(reader),
+                    seek_segment,
+                    first_serial,
                 },
                 first,
             )),
@@ -257,7 +294,7 @@ fn probe(path: &Path) -> Result<(u32, u32, f64)> {
             "-select_streams",
             "V:0",
             "-show_entries",
-            "stream=width,height,sample_aspect_ratio:stream_side_data=rotation:format=duration",
+            "stream=width,height,sample_aspect_ratio,duration:stream_side_data=rotation:format=duration",
             "-of",
             "default=noprint_wrappers=1",
         ])
@@ -311,12 +348,11 @@ fn parse_probe(text: &str) -> Result<(u32, u32, f64)> {
         std::mem::swap(&mut width, &mut height);
     }
     let factor = (1280.0 / width).min(720.0 / height).min(1.0);
-    let duration: f64 = key("duration")
-        .ok_or("The MP4 duration is unavailable")?
-        .parse()?;
-    if !duration.is_finite() || duration <= 0.0 {
-        return Err("The MP4 duration is invalid".into());
-    }
+    let duration = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("duration=")?.parse::<f64>().ok())
+        .find(|duration| duration.is_finite() && *duration > 0.0)
+        .ok_or("The MP4 has no valid duration")?;
     Ok((
         (width * factor).round().max(1.0) as u32,
         (height * factor).round().max(1.0) as u32,
