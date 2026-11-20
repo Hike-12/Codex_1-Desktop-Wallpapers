@@ -6,16 +6,26 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{Renderer, Result, video::Video};
+use crate::{Renderer, Result, texture::Artwork, video::Video};
 
 #[derive(Deserialize)]
 struct Manifest {
     name: String,
     shader: Option<PathBuf>,
     video: Option<PathBuf>,
+    artwork: Option<PathBuf>,
+    #[serde(default)]
+    desktop_icons: bool,
 }
 
-fn read_pack(folder: &Path) -> Result<(String, PathBuf)> {
+struct Pack {
+    name: String,
+    asset: PathBuf,
+    artwork: Option<PathBuf>,
+    desktop_icons: bool,
+}
+
+fn read_pack(folder: &Path) -> Result<Pack> {
     let manifest: Manifest = toml::from_str(&fs::read_to_string(folder.join("manifest.toml"))?)?;
     let name = manifest.name.trim();
     if name.is_empty() || name.chars().any(char::is_control) {
@@ -27,13 +37,32 @@ fn read_pack(folder: &Path) -> Result<(String, PathBuf)> {
         (None, Some(path)) => (path, "mp4"),
         _ => return Err("A wallpaper pack needs exactly one 'shader' or 'video' field".into()),
     };
-    validate_pack_path(&path, ext)?;
     let root = folder.canonicalize()?;
+    let asset = resolve_pack_asset(&root, &path, ext)?;
+    if (manifest.artwork.is_some() && ext != "wgsl")
+        || (manifest.desktop_icons && manifest.artwork.is_none())
+    {
+        return Err("Artwork requires a shader, and desktop icons require artwork".into());
+    }
+    let artwork = manifest
+        .artwork
+        .map(|path| resolve_pack_asset(&root, &path, "jpg"))
+        .transpose()?;
+    Ok(Pack {
+        name: name.to_owned(),
+        asset,
+        artwork,
+        desktop_icons: manifest.desktop_icons,
+    })
+}
+
+fn resolve_pack_asset(root: &Path, path: &Path, ext: &str) -> Result<PathBuf> {
+    validate_pack_path(path, ext)?;
     let asset = root.join(path).canonicalize()?;
-    if !asset.starts_with(&root) || !asset.is_file() {
+    if !asset.starts_with(root) || !asset.is_file() {
         return Err("The asset must be a file inside its wallpaper pack".into());
     }
-    Ok((name.to_owned(), asset))
+    Ok(asset)
 }
 
 fn has_extension(path: &Path, extension: &str) -> bool {
@@ -63,7 +92,7 @@ pub fn installed_packs(root: &Path) -> io::Result<Vec<(String, PathBuf)>> {
         let folder = entry?.path();
         if folder.is_dir() {
             match read_pack(&folder) {
-                Ok((name, _)) => packs.push((name, folder)),
+                Ok(pack) => packs.push((pack.name, folder)),
                 Err(error) => eprintln!("wallp: {}: {error}", folder.display()),
             }
         }
@@ -87,22 +116,25 @@ enum SceneSource {
 
 struct ShaderFile {
     path: PathBuf,
+    artwork: Option<PathBuf>,
+    desktop_icons: bool,
     last_read: Option<std::result::Result<Arc<str>, String>>,
-    last_good: Option<Arc<str>>,
+    last_good: Option<(Arc<str>, Option<Artwork>)>,
 }
 
 impl SceneFile {
     pub fn resolve(path: PathBuf) -> Result<Self> {
-        let path = if path.is_dir() {
-            read_pack(&path)
-                .map_err(|error| format!("{}: {error}", path.display()))?
-                .1
+        let (path, artwork, desktop_icons) = if path.is_dir() {
+            let pack = read_pack(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            (pack.asset, pack.artwork, pack.desktop_icons)
         } else {
-            path
+            (path, None, false)
         };
         let source = if has_extension(&path, "wgsl") {
             SceneSource::Shader(ShaderFile {
                 path: path.clone(),
+                artwork,
+                desktop_icons,
                 last_read: None,
                 last_good: None,
             })
@@ -187,24 +219,43 @@ impl SceneFile {
             }
         )
     }
+
+    pub fn uses_desktop_icons(&self) -> bool {
+        matches!(&self.source, SceneSource::Shader(shader) if shader.desktop_icons && shader.last_good.is_some())
+    }
 }
 
 impl ShaderFile {
+    fn install(&mut self, source: Arc<str>, renderers: &mut [&mut Renderer<'_>]) -> Result<()> {
+        let artwork = self
+            .artwork
+            .as_deref()
+            .map(|path| {
+                Artwork::load(path, self.desktop_icons)
+                    .map_err(|error| format!("{}: {error}", path.display()))
+            })
+            .transpose()?;
+        set_shader_with_artwork(&source, artwork.as_ref(), renderers)?;
+        self.last_good = Some((source, artwork));
+        Ok(())
+    }
+
     fn select_all(&mut self, renderers: &mut [&mut Renderer<'_>]) -> Result<()> {
         let source: Arc<str> = fs::read_to_string(&self.path)
             .map(Arc::from)
             .map_err(|error| format!("{}: {error}", self.path.display()))?;
-        set_shader_all(&source, renderers)
+        self.install(source.clone(), renderers)
             .map_err(|error| format!("{}: {error}", self.path.display()))?;
-        self.last_good = Some(source.clone());
         self.last_read = Some(Ok(source));
         eprintln!("wallp: loaded {}", self.path.display());
         Ok(())
     }
 
     fn apply_to(&self, renderer: &mut Renderer<'_>) -> Result<()> {
-        if let Some(source) = &self.last_good {
-            pollster::block_on(renderer.set_shader(source))?;
+        if let Some((source, artwork)) = &self.last_good {
+            renderer.shader =
+                pollster::block_on(renderer.prepare_shader(source, artwork.as_ref()))?;
+            renderer.video = None;
         }
         Ok(())
     }
@@ -217,9 +268,8 @@ impl ShaderFile {
             return;
         }
         match &read {
-            Ok(source) => match set_shader_all(source, renderers) {
+            Ok(source) => match self.install(source.clone(), renderers) {
                 Ok(()) => {
-                    self.last_good = Some(source.clone());
                     eprintln!("wallp: loaded {}", self.path.display());
                 }
                 Err(error) => eprintln!("wallp: {}: {error}", self.path.display()),
@@ -243,6 +293,7 @@ fn load_video(path: &Path, renderers: &mut [&mut Renderer<'_>]) -> Result<Arc<Vi
         Ok::<_, Box<dyn std::error::Error>>(painters)
     })?;
     for (renderer, painter) in renderers.iter_mut().zip(painters) {
+        renderer.shader.texture = None;
         renderer.video = Some(painter);
     }
     eprintln!("wallp: loaded {}", path.display());
@@ -251,18 +302,26 @@ fn load_video(path: &Path, renderers: &mut [&mut Renderer<'_>]) -> Result<Arc<Vi
 
 /// Compile each display's pipeline before changing any of them.
 pub fn set_shader_all(source: &str, renderers: &mut [&mut Renderer<'_>]) -> Result<()> {
+    set_shader_with_artwork(source, None, renderers)
+}
+
+fn set_shader_with_artwork(
+    source: &str,
+    artwork: Option<&Artwork>,
+    renderers: &mut [&mut Renderer<'_>],
+) -> Result<()> {
     if renderers.is_empty() {
         return Err("No wallpaper displays are available".into());
     }
     let pipelines = pollster::block_on(async {
         let mut pipelines = Vec::with_capacity(renderers.len());
         for renderer in renderers.iter() {
-            pipelines.push(renderer.prepare_shader(source).await?);
+            pipelines.push(renderer.prepare_shader(source, artwork).await?);
         }
         Ok::<_, Box<dyn std::error::Error>>(pipelines)
     })?;
     for (renderer, pipeline) in renderers.iter_mut().zip(pipelines) {
-        renderer.pipeline = pipeline;
+        renderer.shader = pipeline;
         renderer.video = None;
     }
     Ok(())

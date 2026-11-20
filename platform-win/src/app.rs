@@ -23,7 +23,7 @@ use winit::{
 use crate::{
     audio::PlaybackAudio,
     desktop::{self, Desktop, DesktopLayer},
-    ipc,
+    icons, ipc,
     tray::{self, Action, Tray},
 };
 
@@ -229,6 +229,8 @@ struct Wallpapers {
     battery_saver: bool,
     next_desktop_check: Instant,
     next_shader_check: Instant,
+    icons: Option<icons::Reader>,
+    icon_snapshot: Option<icons::Snapshot>,
 }
 
 impl Wallpapers {
@@ -265,6 +267,8 @@ impl Wallpapers {
             battery_saver,
             next_desktop_check: now,
             next_shader_check: now,
+            icons: None,
+            icon_snapshot: None,
         };
         wallpapers.refresh_desktop(event_loop, now)?;
         Ok(wallpapers)
@@ -281,6 +285,7 @@ impl Wallpapers {
             .collect::<Vec<_>>();
         let shader = SceneFile::resolve(path)?.select_all(&mut renderers)?;
         self.shader = Some(shader);
+        self.next_desktop_check = Instant::now();
         self.next_shader_check = Instant::now() + SHADER_INTERVAL;
         Ok(())
     }
@@ -366,7 +371,8 @@ impl Wallpapers {
 
     fn update(&mut self, event_loop: &ActiveEventLoop) -> Result<Instant> {
         let now = Instant::now();
-        if now >= self.next_desktop_check {
+        let desktop_due = now >= self.next_desktop_check;
+        if desktop_due {
             self.refresh_desktop(event_loop, now)?;
         }
         let mut deadline = self.next_desktop_check;
@@ -380,6 +386,7 @@ impl Wallpapers {
         if let Some(scene) = &self.shader {
             scene.set_active(active);
         }
+        let scene_due = active && now >= self.next_shader_check;
         if active && let Some(shader) = &mut self.shader {
             if now >= self.next_shader_check {
                 self.next_shader_check = now + SHADER_INTERVAL;
@@ -391,6 +398,28 @@ impl Wallpapers {
                 shader.reload_all(&mut renderers);
             }
             deadline = deadline.min(self.next_shader_check);
+        }
+        if !self
+            .shader
+            .as_ref()
+            .is_some_and(SceneFile::uses_desktop_icons)
+        {
+            self.icons = None;
+            self.icon_snapshot = None;
+        } else if active && (desktop_due || scene_due) {
+            if self.icons.is_none() {
+                self.icons = Some(icons::Reader::start()?);
+            }
+            if let Some(snapshot) = self.icons.as_ref().and_then(icons::Reader::poll) {
+                self.icon_snapshot = Some(snapshot);
+            }
+            if let Some(snapshot) = &self.icon_snapshot {
+                for wallpaper in &mut self.surfaces {
+                    wallpaper
+                        .renderer
+                        .update_desktop_icons(&snapshot.for_monitor(wallpaper.bounds));
+                }
+            }
         }
         for wallpaper in self
             .surfaces

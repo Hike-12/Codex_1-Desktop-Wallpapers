@@ -1,7 +1,9 @@
 use std::{error::Error, sync::Arc};
 
 pub mod audio;
+pub mod icons;
 pub mod shader;
+mod texture;
 mod video;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -23,12 +25,17 @@ pub struct Renderer<'window> {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
+    shader: PreparedShader,
     layout: wgpu::PipelineLayout,
     bind_layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     video: Option<VideoPainter>,
+}
+
+struct PreparedShader {
+    pipeline: wgpu::RenderPipeline,
+    texture: Option<texture::SceneTexture>,
 }
 
 impl<'window> Renderer<'window> {
@@ -119,7 +126,10 @@ impl<'window> Renderer<'window> {
             device,
             queue,
             config,
-            pipeline,
+            shader: PreparedShader {
+                pipeline,
+                texture: None,
+            },
             layout,
             bind_layout,
             globals,
@@ -129,9 +139,17 @@ impl<'window> Renderer<'window> {
     }
 
     pub async fn set_shader(&mut self, source: &str) -> Result<()> {
-        self.pipeline = self.prepare_shader(source).await?;
+        self.shader = self.prepare_shader(source, None).await?;
         self.video = None;
         Ok(())
+    }
+
+    pub fn update_desktop_icons(&mut self, layout: &icons::IconLayout) {
+        if let Some(texture) = &mut self.shader.texture
+            && self.video.is_none()
+        {
+            texture.update_icons(layout);
+        }
     }
 
     async fn prepare_video(&self, video: Arc<video::Video>) -> Result<VideoPainter> {
@@ -217,8 +235,33 @@ impl<'window> Renderer<'window> {
         })
     }
 
-    async fn prepare_shader(&self, source: &str) -> Result<wgpu::RenderPipeline> {
-        compile(&self.device, &self.layout, self.config.format, source).await
+    async fn prepare_shader(
+        &self,
+        source: &str,
+        artwork: Option<&texture::Artwork>,
+    ) -> Result<PreparedShader> {
+        let textured = artwork
+            .map(|artwork| texture::SceneTexture::new(&self.device, &self.queue, artwork))
+            .transpose()?;
+        let layout = textured.as_ref().map(|(layout, _)| {
+            self.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Textured wallpaper pipeline"),
+                    bind_group_layouts: &[&self.bind_layout, layout],
+                    push_constant_ranges: &[],
+                })
+        });
+        let pipeline = compile(
+            &self.device,
+            layout.as_ref().unwrap_or(&self.layout),
+            self.config.format,
+            source,
+        )
+        .await?;
+        Ok(PreparedShader {
+            pipeline,
+            texture: textured.map(|(_, texture)| texture),
+        })
     }
 
     pub fn render(&mut self, width: u32, height: u32, time: f32) -> Result<bool> {
@@ -263,6 +306,8 @@ impl<'window> Renderer<'window> {
             .write_buffer(&self.globals, 0, uniforms.as_flattened());
         if let Some(video) = &mut self.video {
             video.upload(&self.queue);
+        } else if let Some(texture) = &mut self.shader.texture {
+            texture.upload(&self.queue);
         }
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -282,7 +327,10 @@ impl<'window> Renderer<'window> {
                 pass.set_pipeline(&video.pipeline);
                 pass.set_bind_group(1, &video.bind_group, &[]);
             } else {
-                pass.set_pipeline(&self.pipeline);
+                pass.set_pipeline(&self.shader.pipeline);
+                if let Some(texture) = &self.shader.texture {
+                    pass.set_bind_group(1, &texture.bind_group, &[]);
+                }
             }
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
