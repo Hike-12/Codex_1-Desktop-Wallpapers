@@ -62,6 +62,7 @@ pub fn run(path: Option<PathBuf>, audio: bool, battery_saver: bool) -> Result<()
         output_state,
         registry_state: RegistryState::new(&globals),
         toplevels: HashMap::new(),
+        sway: std::env::var_os("SWAYSOCK").is_some_and(|socket| !socket.is_empty()),
         audio: Playback::start(audio),
         battery: BatterySaver::new(battery_saver),
         shader: initial_shader(path),
@@ -87,6 +88,7 @@ struct Desktop {
     output_state: OutputState,
     registry_state: RegistryState,
     toplevels: HashMap<ObjectId, fullscreen::Toplevel>,
+    sway: bool,
     audio: Option<Playback>,
     battery: BatterySaver,
     shader: Option<ShaderFile>,
@@ -128,6 +130,8 @@ impl Desktop {
             configure: None,
             scale: 1,
             ready: true,
+            visibility_probe: false,
+            visible_under_stale_cover: false,
             clock: FrameClock::new(Instant::now()),
         });
         Ok(())
@@ -151,7 +155,22 @@ impl Desktop {
                 .toplevels
                 .values()
                 .any(|toplevel| toplevel.covers(&wallpaper.output));
-            wallpaper.clock.set_paused(battery || covered, now);
+            let mut paused = covered;
+            if self.sway {
+                let active_cover = self
+                    .toplevels
+                    .values()
+                    .any(|toplevel| toplevel.actively_covers(&wallpaper.output));
+                if !covered || active_cover {
+                    wallpaper.visible_under_stale_cover = false;
+                } else if !battery {
+                    // A layer started under an inactive fullscreen window needs
+                    // its first buffer before visibility callbacks can wake it.
+                    paused = wallpaper.renderer.is_some() && !wallpaper.visible_under_stale_cover;
+                    wallpaper.probe_visibility(handle);
+                }
+            }
+            wallpaper.clock.set_paused(battery || paused, now);
             if wallpaper.is_due(now) && wallpaper.renderer.is_none() {
                 let (width, height) = wallpaper.buffer_size(&self.output_state)?;
                 let mut renderer = create_renderer(connection, &wallpaper.layer, width, height)?;
@@ -214,10 +233,24 @@ struct Wallpaper {
     configure: Option<(u32, u32)>,
     scale: u32,
     ready: bool,
+    visibility_probe: bool,
+    visible_under_stale_cover: bool,
     clock: FrameClock,
 }
 
 impl Wallpaper {
+    fn probe_visibility(&mut self, handle: &QueueHandle<Desktop>) {
+        // Sway can retain the toplevel's output association for hidden workspaces.
+        // A fresh callback lets the visible layer resume without submitting a probe frame.
+        if self.ready && self.renderer.is_some() && !self.visible_under_stale_cover {
+            let surface = self.layer.wl_surface();
+            surface.frame(handle, surface.clone());
+            self.layer.commit();
+            self.visibility_probe = true;
+            self.ready = false;
+        }
+    }
+
     fn can_draw(&self) -> bool {
         self.ready && self.configure.is_some() && self.clock.paused_at.is_none()
     }
@@ -352,6 +385,9 @@ impl CompositorHandler for Desktop {
         _: u32,
     ) {
         if let Some(wallpaper) = self.wallpaper(surface) {
+            if std::mem::take(&mut wallpaper.visibility_probe) {
+                wallpaper.visible_under_stale_cover = true;
+            }
             wallpaper.ready = true;
         }
     }

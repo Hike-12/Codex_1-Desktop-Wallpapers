@@ -11,13 +11,19 @@ use super::Desktop;
 #[derive(Default)]
 pub(super) struct Toplevel {
     outputs: Vec<WlOutput>,
-    focused_fullscreen: bool,
+    fullscreen: bool,
+    activated: bool,
     covered: Vec<WlOutput>,
+    active_cover: bool,
 }
 
 impl Toplevel {
     pub(super) fn covers(&self, output: &WlOutput) -> bool {
         self.covered.contains(output)
+    }
+
+    pub(super) fn actively_covers(&self, output: &WlOutput) -> bool {
+        self.active_cover && self.covers(output)
     }
 }
 
@@ -76,15 +82,18 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Desktop {
                     .copied()
                     .map(u32::from_ne_bytes);
                 let contains = |state: State| states.clone().any(|value| value == state as u32);
-                // The protocol has no workspace visibility. Focus avoids pausing for hidden apps.
-                toplevel.focused_fullscreen = contains(State::Fullscreen)
-                    && contains(State::Activated)
-                    && !contains(State::Minimized);
+                // Output enter/leave describe visibility independently of keyboard focus.
+                toplevel.fullscreen = contains(State::Fullscreen) && !contains(State::Minimized);
+                toplevel.activated = contains(State::Activated);
             }
-            HandleEvent::Done if toplevel.focused_fullscreen => {
-                toplevel.covered.clone_from(&toplevel.outputs);
+            HandleEvent::Done => {
+                toplevel.active_cover = toplevel.activated && toplevel.fullscreen;
+                if toplevel.fullscreen {
+                    toplevel.covered.clone_from(&toplevel.outputs);
+                } else {
+                    toplevel.covered.clear();
+                }
             }
-            HandleEvent::Done => toplevel.covered.clear(),
             _ => {}
         }
     }
