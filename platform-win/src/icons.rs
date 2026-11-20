@@ -11,7 +11,7 @@ use windows::{
     Win32::{
         System::{
             Com::{
-                CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+                CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
                 CoTaskMemFree, CoUninitialize, IServiceProvider,
             },
             Variant::VARIANT,
@@ -83,33 +83,45 @@ struct Apartment;
 impl Apartment {
     fn enter() -> windows::core::Result<Self> {
         // The worker exclusively owns its COM objects and releases them before uninitializing.
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
         Ok(Self)
     }
 
-    fn sample(&self) -> windows::core::Result<Snapshot> {
+    fn sample(&self) -> core_engine::Result<Snapshot> {
         // These read-only Shell calls run off the window event loop. PIDLs returned by
         // Item are owned by this thread and freed on every path by ItemId.
         unsafe {
-            let shell: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)?;
+            let shell: IShellWindows =
+                CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)
+                    .map_err(|error| format!("connect to Shell Windows: {error}"))?;
             let location = VARIANT::from(0_i32);
             let empty = VARIANT::default();
             let mut hwnd = 0;
             let services: IServiceProvider = shell
-                .FindWindowSW(&location, &empty, SWC_DESKTOP, &mut hwnd, SWFO_NEEDDISPATCH)?
+                .FindWindowSW(&location, &empty, SWC_DESKTOP, &mut hwnd, SWFO_NEEDDISPATCH)
+                .map_err(|error| format!("find the Explorer desktop: {error}"))?
                 .cast()?;
-            let browser: IShellBrowser = services.QueryService(&SID_STopLevelBrowser)?;
-            let shell_view = browser.QueryActiveShellView()?;
-            let coords = shell_view.GetWindow()?.0;
+            let browser: IShellBrowser = services
+                .QueryService(&SID_STopLevelBrowser)
+                .map_err(|error| format!("open the desktop browser: {error}"))?;
+            let shell_view = browser
+                .QueryActiveShellView()
+                .map_err(|error| format!("open the desktop view: {error}"))?;
+            let coords = shell_view
+                .GetWindow()
+                .map_err(|error| format!("find the desktop view window: {error}"))?
+                .0;
             let list = FindWindowExW(coords, ptr::null_mut(), w!("SysListView32"), ptr::null());
             let coords = if list.is_null() { coords } else { list };
             let mut origin = POINT { x: 0, y: 0 };
             if ClientToScreen(coords, &mut origin) == 0 {
-                return Err(windows::core::Error::from_thread());
+                return Err(std::io::Error::last_os_error().into());
             }
             let folder: IFolderView = shell_view.cast()?;
             let mut spacing = windows::Win32::Foundation::POINT::default();
-            folder.GetSpacing(&mut spacing)?;
+            folder
+                .GetSpacing(&mut spacing)
+                .map_err(|error| format!("read desktop icon spacing: {error}"))?;
             let spacing = [spacing.x.max(32), spacing.y.max(32)];
             let mut snapshot = Snapshot {
                 spacing,
@@ -118,7 +130,10 @@ impl Apartment {
             if IsWindowVisible(coords) == 0 {
                 return Ok(snapshot);
             }
-            let count = folder.ItemCount(SVGIO_ALLVIEW)?.clamp(0, MAX_ICONS);
+            let count = folder
+                .ItemCount(SVGIO_ALLVIEW)
+                .map_err(|error| format!("enumerate desktop icons: {error}"))?
+                .clamp(0, MAX_ICONS);
             for index in 0..count {
                 let Ok(pidl) = folder.Item(index) else {
                     continue;
