@@ -248,7 +248,7 @@ impl App {
             }
             Control::Fps(_) => return Err("Choose 15, 30 or 60 FPS".into()),
             Control::Startup(value) => set_startup(value)?,
-            Control::Status | Control::OpenGallery => {}
+            Control::Status | Control::OpenGallery | Control::Quit => {}
         }
         let state = State {
             active: wallpaper.selection.clone(),
@@ -344,6 +344,11 @@ impl ApplicationHandler<Event> for App {
                 let _ = reply.send(result);
             }
             Event::Control { control, reply } => {
+                if matches!(control, Control::Quit) {
+                    let _ = reply.send(Err("wallp is shutting down".into()));
+                    event_loop.exit();
+                    return;
+                }
                 let _ = reply.send(self.control(control).map_err(|error| error.to_string()));
             }
             Event::Menu(event) => {
@@ -542,6 +547,7 @@ impl Wallpapers {
             if !wallpaper.desktop.is_attached() {
                 return Err("Explorer's wallpaper window was closed".into());
             }
+            wallpaper.desktop.keep_behind_icons()?;
             if bounds_key(wallpaper.bounds) != bounds_key(bounds) {
                 wallpaper.desktop.fit(bounds)?;
                 wallpaper.bounds = bounds;

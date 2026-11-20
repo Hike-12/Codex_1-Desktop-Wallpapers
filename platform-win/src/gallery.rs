@@ -16,8 +16,6 @@ const PANEL: Color32 = Color32::from_rgb(18, 20, 26);
 const PANEL_HOVER: Color32 = Color32::from_rgb(26, 30, 39);
 const PANEL_ACTIVE: Color32 = Color32::from_rgb(19, 27, 34);
 const CONTROL_BAR: Color32 = Color32::from_rgb(14, 16, 21);
-const BORDER: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 16);
-const BORDER_HOVER: Color32 = Color32::from_rgba_premultiplied(45, 212, 191, 140);
 const ACCENT: Color32 = Color32::from_rgb(45, 212, 191);
 const ACCENT_DIM: Color32 = Color32::from_rgba_premultiplied(45, 212, 191, 35);
 const BACKGROUND: Color32 = Color32::from_rgb(10, 11, 14);
@@ -45,16 +43,16 @@ pub fn run() -> Result<()> {
             visuals.selection.bg_fill = ACCENT_DIM;
             visuals.selection.stroke.color = ACCENT;
             visuals.widgets.noninteractive.bg_fill = PANEL;
-            visuals.widgets.noninteractive.bg_stroke.color = BORDER;
+            visuals.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
             visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
             visuals.widgets.inactive.bg_fill = CONTROL_BAR;
-            visuals.widgets.inactive.bg_stroke.color = BORDER;
+            visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
             visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
             visuals.widgets.hovered.bg_fill = PANEL_HOVER;
-            visuals.widgets.hovered.bg_stroke.color = ACCENT;
+            visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
             visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
             visuals.widgets.active.bg_fill = PANEL_ACTIVE;
-            visuals.widgets.active.bg_stroke.color = ACCENT;
+            visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
             visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
             ctx.set_visuals(visuals);
             let mut gallery = Gallery {
@@ -325,7 +323,6 @@ impl eframe::App for Gallery {
                         egui::Frame::new()
                             .fill(CONTROL_BAR)
                             .corner_radius(8)
-                            .stroke(egui::Stroke::new(1.0_f32, BORDER))
                             .inner_margin(egui::Margin::symmetric(14, 8))
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
@@ -337,7 +334,6 @@ impl eframe::App for Gallery {
                                     if ui.button(RichText::new(pause_icon).size(13.0)).clicked() {
                                         work = Some(Work::Control(Control::Pause(!state.paused)));
                                     }
-                                    ui.separator();
                                     let mut audio = state.audio;
                                     if ui
                                         .checkbox(
@@ -348,7 +344,6 @@ impl eframe::App for Gallery {
                                     {
                                         work = Some(Work::Control(Control::Audio(audio)));
                                     }
-                                    ui.separator();
                                     let mut fps = state.fps;
                                     egui::ComboBox::from_id_salt("fps")
                                         .selected_text(RichText::new(fps_label(fps)).size(13.0))
@@ -364,7 +359,6 @@ impl eframe::App for Gallery {
                                     if fps != state.fps {
                                         work = Some(Work::Control(Control::Fps(fps)));
                                     }
-                                    ui.separator();
                                     let mut startup = state.startup;
                                     if ui
                                         .checkbox(
@@ -374,6 +368,9 @@ impl eframe::App for Gallery {
                                         .changed()
                                     {
                                         work = Some(Work::Control(Control::Startup(startup)));
+                                    }
+                                    if ui.button("Return to Windows wallpaper").clicked() {
+                                        work = Some(Work::Control(Control::Quit));
                                     }
                                 });
                             });
@@ -414,7 +411,6 @@ impl eframe::App for Gallery {
                 if let Some(status) = &self.status {
                     ui.label(RichText::new(status).color(Color32::LIGHT_RED));
                 }
-                ui.separator();
                 egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
@@ -485,17 +481,8 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::
     } else {
         PANEL
     };
-    let border_stroke = if active {
-        egui::Stroke::new(2.0_f32, ACCENT)
-    } else if is_hovered {
-        egui::Stroke::new(1.5_f32, BORDER_HOVER)
-    } else {
-        egui::Stroke::new(1.0_f32, BORDER)
-    };
-
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     painter.rect_filled(rect, 8, bg_color);
-    painter.rect_stroke(rect, 8, border_stroke, egui::StrokeKind::Inside);
 
     let origin = rect.min + Vec2::new(8.0, 8.0);
     let picture = egui::Rect::from_min_size(origin, Vec2::new(width - 16.0, image_height));
@@ -511,12 +498,6 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::
             picture,
             egui::Rect::from_center_size(egui::pos2(0.5, 0.5), crop),
             Color32::WHITE,
-        );
-        painter.rect_stroke(
-            picture,
-            4,
-            egui::Stroke::new(1.0_f32, BORDER),
-            egui::StrokeKind::Inside,
         );
     } else {
         painter.rect_filled(picture, 4, BACKGROUND);
@@ -535,12 +516,6 @@ fn draw_card(ui: &mut egui::Ui, card: &Card, width: f32, active: bool) -> egui::
             badge_rect,
             4,
             Color32::from_rgba_premultiplied(10, 11, 14, 210),
-        );
-        painter.rect_stroke(
-            badge_rect,
-            4,
-            egui::Stroke::new(1.0_f32, ACCENT),
-            egui::StrokeKind::Inside,
         );
         painter.text(
             badge_rect.center(),

@@ -98,6 +98,24 @@ impl Desktop {
         Ok(())
     }
 
+    pub fn keep_behind_icons(&self) -> io::Result<()> {
+        unsafe {
+            if SetWindowPos(
+                self.window,
+                self.layer.above,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_attached(&self) -> bool {
         unsafe { IsWindow(self.window) != 0 && GetParent(self.window) == self.layer.parent }
     }

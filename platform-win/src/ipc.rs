@@ -74,6 +74,7 @@ pub enum Control {
     Audio(bool),
     Fps(u8),
     Startup(bool),
+    Quit,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

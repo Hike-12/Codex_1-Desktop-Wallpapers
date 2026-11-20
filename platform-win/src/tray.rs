@@ -96,7 +96,7 @@ fn build_menu(packs: Vec<(String, PathBuf)>) -> Result<(Menu, Vec<(MenuId, PathB
         &MenuItem::with_id(OPEN, "Open wallpapers folder", true, None),
         &MenuItem::with_id(REFRESH, "Refresh wallpapers", true, None),
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id(QUIT, "Quit", true, None),
+        &MenuItem::with_id(QUIT, "Restore Windows wallpaper and quit", true, None),
     ])?;
     Ok((menu, selections))
 }
